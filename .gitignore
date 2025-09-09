@@ -67,6 +67,7 @@ target/
 #mac
 .DS_Store
 *~
+.env
 
 #vim
 *.swp
