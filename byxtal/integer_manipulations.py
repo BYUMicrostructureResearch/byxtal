@@ -1,5 +1,6 @@
 import numpy as np
 from sympy import Rational
+from sympy.matrices import Matrix
 import sympy as spy
 from fractions import Fraction
 import numpy.linalg as nla
