@@ -103,8 +103,8 @@ def compute_inp_params(lattice, sig_type):
 
     kmax: float
         kmax is an integer that depends on :math:`\\mu \\ , \\nu`
-        for hcp: kmax equals to F/\Sigma. kmax is always a divisor of 12\\mu\\nu. 
-        F/\Sigma is a dicisor of 6\\mu\\nu if \\nu is even and a divisor od 3\\mu\\nu
+        for hcp: kmax equals to F/\\Sigma. kmax is always a divisor of 12\\mu\\nu. 
+        F/\\Sigma is a dicisor of 6\\mu\\nu if \\nu is even and a divisor od 3\\mu\\nu
         if \\nu is a multiple of 4.
     """
     lat_params = lattice.lat_params
