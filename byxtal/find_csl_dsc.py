@@ -105,8 +105,9 @@ def find_csl_dsc(l_p_po, T_p1top2_p1, tol1=1e-6, print_check=True):
     l_dsc_p = dsc_finder(T_p1top2_p1, l_p_po, tol1)
     check_val2 = check_dsc(l_dsc_p, l_csl_p, l_p_po, T_p1top2_p1, Sigma, print_check)
 
-    print([check_val1])
-    if (not(check_val1)):
+    if print_check:
+        print([check_val1, check_val2])
+    if (not(check_val1 and check_val2)):
         raise Exception("Error in Computing CSL or DSC Lattices.")
     return l_csl_p, l_dsc_p
 
@@ -434,4 +435,3 @@ def make_right_handed(l_csl_p1, l_p_po):
         t1_array[:, 0] = t2_array[:, 1]
         t1_array[:, 1] = t2_array[:, 0]
     return t1_array
-
