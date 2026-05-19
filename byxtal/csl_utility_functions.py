@@ -1198,8 +1198,8 @@ def enumerate_csl_props(sig_num, sig_type, lat_type, tol=1e-6,
     -------
     dict
         Dictionary containing sorted ``sig_ids``, ``csl_rotation_ids``,
-        ``sig_mats``, ``csl_mats``, ``dis_quats``, ``dis_axis_angles``, and
-        ``csl_bp_props``.
+        ``sig_mats``, ``csl_mats``, ``dsc_mats``, ``dis_quats``,
+        ``dis_axis_angles``, and ``csl_bp_props``.
     """
     if sig_num == 1:
         raise ValueError('sig_num=1 is the identity rotation.')
@@ -1220,7 +1220,8 @@ def enumerate_csl_props(sig_num, sig_type, lat_type, tol=1e-6,
         t_p1top2_p1 = sig_rots['N'][ct1]/sig_rots['D'][ct1]
         t_p1top2_p1 = np.array(t_p1top2_p1, dtype='double')
 
-        l_csl_p = fcd.csl_finder(t_p1top2_p1, l_p_po, tol)
+        l_csl_p, l_dsc_p = fcd.find_csl_dsc(
+            l_p_po, t_p1top2_p1, tol, print_check=False)
 
         t_p1top2_po1 = np.dot(l_p_po, np.dot(t_p1top2_p1, l_po_p))
         quat1 = trans.mat2quat(t_p1top2_po1)
@@ -1237,6 +1238,7 @@ def enumerate_csl_props(sig_num, sig_type, lat_type, tol=1e-6,
             'csl_rotation_id': csl_rotation_id,
             'sig_mat': t_p1top2_p1,
             'csl_mat': l_csl_p,
+            'dsc_mat': l_dsc_p,
             'dis_quat': dis_quat1,
             'dis_axis_angle': _disquat_axis_angle(dis_quat1, axis_tol),
             'csl_bp_props': bp_symm_grp_props,
@@ -1263,6 +1265,10 @@ def enumerate_csl_props(sig_num, sig_type, lat_type, tol=1e-6,
         },
         'csl_mats': {
             sig_id: record['csl_mat']
+            for sig_id, record in zip(sig_ids, records)
+        },
+        'dsc_mats': {
+            sig_id: record['dsc_mat']
             for sig_id, record in zip(sig_ids, records)
         },
         'dis_quats': {
