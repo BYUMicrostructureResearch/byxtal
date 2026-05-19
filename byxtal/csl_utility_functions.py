@@ -1140,6 +1140,144 @@ def csl_rotations(sigma, sig_type, lat_type):
         return sig_rots
 
 
+def _alpha_label(index):
+    """
+    Convert a zero-based index to spreadsheet-style lowercase labels.
+    """
+    if index < 0:
+        raise ValueError('index must be non-negative')
+
+    label = ''
+    index += 1
+    while index:
+        index, remainder = divmod(index - 1, 26)
+        label = chr(ord('a') + remainder) + label
+    return label
+
+
+def _disquat_axis_angle(dis_quat, axis_tol):
+    """
+    Convert a disorientation quaternion to (angle_deg, h, k, l).
+    """
+    ax_ang = trans.vrrotmat2vec(trans.quat2mat(dis_quat))
+    axis = np.asarray(ax_ang[:3, 0], dtype='double')
+    angle_deg = np.degrees(ax_ang[3, 0])
+
+    if nla.norm(axis) < axis_tol:
+        axis_int = np.array([0, 0, 0], dtype='int64')
+    else:
+        axis_int, _ = int_man.int_approx(axis, axis_tol)
+        axis_int = np.asarray(axis_int, dtype='int64').reshape(3,)
+
+    return (float(angle_deg), int(axis_int[0]), int(axis_int[1]),
+            int(axis_int[2]))
+
+
+def enumerate_csl_props(sig_num, sig_type, lat_type, tol=1e-6,
+                        sort_decimals=12, axis_tol=1e-6):
+    """
+    Enumerate CSL properties for one sigma number and sort by disorientation.
+
+    Parameters
+    ----------
+    sig_num : int
+        Sigma number to enumerate. Sigma 1 and even sigma numbers raise
+        ValueError.
+    sig_type : {'common', 'specific'}
+        Sigma rotation type passed to :func:`csl_rotations`.
+    lat_type : class
+        Attributes of the underlying lattice class.
+    tol : float, optional
+        Tolerance used for CSL computations.
+    sort_decimals : int, optional
+        Number of decimals used when sorting disorientation quaternions.
+    axis_tol : float, optional
+        Tolerance used to convert disorientation axes to integer vectors.
+
+    Returns
+    -------
+    dict
+        Dictionary containing sorted ``sig_ids``, ``csl_rotation_ids``,
+        ``sig_mats``, ``csl_mats``, ``dis_quats``, ``dis_axis_angles``, and
+        ``csl_bp_props``.
+    """
+    if sig_num == 1:
+        raise ValueError('sig_num=1 is the identity rotation.')
+    if np.remainder(sig_num, 2) == 0:
+        raise ValueError(
+            'Even sigma numbers are not valid for this enumeration.')
+
+    from . import disorient_symm_props as dsp
+    from . import find_csl_dsc as fcd
+
+    sig_rots = csl_rotations(sig_num, sig_type, lat_type)
+    l_p_po = lat_type.l_p_po
+    l_po_p = nla.inv(l_p_po)
+
+    records = []
+    for ct1 in range(np.shape(sig_rots['N'])[0]):
+        csl_rotation_id = str(sig_num)+'_'+str(ct1+1)
+        t_p1top2_p1 = sig_rots['N'][ct1]/sig_rots['D'][ct1]
+        t_p1top2_p1 = np.array(t_p1top2_p1, dtype='double')
+
+        l_csl_p = fcd.csl_finder(t_p1top2_p1, l_p_po, tol)
+
+        t_p1top2_po1 = np.dot(l_p_po, np.dot(t_p1top2_p1, l_po_p))
+        quat1 = trans.mat2quat(t_p1top2_po1)
+        dis_quat1 = mis_fz.misorient_fz(quat1, lat_type.cryst_ptgrp)
+        x_g, y_g, z_g, bp_symm_grp = dsp.disorient_symm_props(
+            dis_quat1, lat_type.cryst_ptgrp)
+
+        bp_symm_grp_props = {
+            'symm_grp_ax': (np.vstack((x_g, y_g, z_g))).transpose(),
+            'bp_symm_grp': bp_symm_grp,
+        }
+
+        records.append({
+            'csl_rotation_id': csl_rotation_id,
+            'sig_mat': t_p1top2_p1,
+            'csl_mat': l_csl_p,
+            'dis_quat': dis_quat1,
+            'dis_axis_angle': _disquat_axis_angle(dis_quat1, axis_tol),
+            'csl_bp_props': bp_symm_grp_props,
+        })
+
+    records.sort(
+        key=lambda record: tuple(
+            np.round(np.asarray(record['dis_quat'][:4]).ravel(),
+                     sort_decimals)))
+
+    sig_ids = [str(sig_num)+_alpha_label(ct1)
+               for ct1 in range(len(records))]
+    return {
+        'sig_ids': sig_ids,
+        'csl_rotation_ids': {
+            sig_id: record['csl_rotation_id']
+            for sig_id, record in zip(sig_ids, records)
+        },
+        'sig_mats': {
+            sig_id: record['sig_mat']
+            for sig_id, record in zip(sig_ids, records)
+        },
+        'csl_mats': {
+            sig_id: record['csl_mat']
+            for sig_id, record in zip(sig_ids, records)
+        },
+        'dis_quats': {
+            sig_id: record['dis_quat']
+            for sig_id, record in zip(sig_ids, records)
+        },
+        'dis_axis_angles': {
+            sig_id: record['dis_axis_angle']
+            for sig_id, record in zip(sig_ids, records)
+        },
+        'csl_bp_props': {
+            sig_id: record['csl_bp_props']
+            for sig_id, record in zip(sig_ids, records)
+        },
+    }
+
+
 def check_csl(l_csl_p, l_p_po, T_p1top2_p1, Sigma, print_val):
     """
     The function checks CSL 
@@ -1187,4 +1325,3 @@ def check_csl(l_csl_p, l_p_po, T_p1top2_p1, Sigma, print_val):
             print(Disp_str)
 
     return (cond1 and cond2 and cond3)
-
