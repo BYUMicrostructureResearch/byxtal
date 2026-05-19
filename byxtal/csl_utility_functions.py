@@ -1176,7 +1176,7 @@ def _disquat_axis_angle(dis_quat, axis_tol):
 def enumerate_csl_props(sig_num, sig_type, lat_type, tol=1e-6,
                         sort_decimals=12, axis_tol=1e-6):
     """
-    Enumerate CSL properties for one sigma number and sort by disorientation.
+    Enumerate CSL properties for one sigma number and sort by axis-angle.
 
     Parameters
     ----------
@@ -1190,7 +1190,7 @@ def enumerate_csl_props(sig_num, sig_type, lat_type, tol=1e-6,
     tol : float, optional
         Tolerance used for CSL computations.
     sort_decimals : int, optional
-        Number of decimals used when sorting disorientation quaternions.
+        Number of decimals used when sorting disorientation angles.
     axis_tol : float, optional
         Tolerance used to convert disorientation axes to integer vectors.
 
@@ -1243,9 +1243,11 @@ def enumerate_csl_props(sig_num, sig_type, lat_type, tol=1e-6,
         })
 
     records.sort(
-        key=lambda record: tuple(
-            np.round(np.asarray(record['dis_quat'][:4]).ravel(),
-                     sort_decimals)))
+        key=lambda record: (
+            np.round(record['dis_axis_angle'][0], sort_decimals),
+            record['dis_axis_angle'][1],
+            record['dis_axis_angle'][2],
+            record['dis_axis_angle'][3]))
 
     sig_ids = [str(sig_num)+_alpha_label(ct1)
                for ct1 in range(len(records))]
