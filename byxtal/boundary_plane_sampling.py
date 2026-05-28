@@ -19,31 +19,6 @@ from . import pick_fz_bpl as pfb
 from . import reduce_po_lat as rpl
 
 
-def csl_record_from_props(csl_props, sig_id):
-    """
-    Build a single-CSL record from ``enumerate_csl_props`` output.
-
-    Parameters
-    ----------
-    csl_props : dict
-        Output from :func:`byxtal.csl_utility_functions.enumerate_csl_props`.
-    sig_id : str
-        Sorted CSL label such as ``'13a'``.
-
-    Returns
-    -------
-    dict
-        Record accepted by :func:`search_boundary_plane`.
-    """
-    return {
-        'sig_id': sig_id,
-        'csl_rotation_id': csl_props['csl_rotation_ids'][sig_id],
-        'sig_mat': csl_props['sig_mats'][sig_id],
-        'csl_mat': csl_props['csl_mats'][sig_id],
-        'csl_bp_props': csl_props['csl_bp_props'][sig_id],
-    }
-
-
 def search_boundary_plane(csl_record, lat_type, target_miller, max_area,
                           angle_radius_deg=5.0, max_index=None,
                           max_transform_index=2, max_area_multiplier=8,

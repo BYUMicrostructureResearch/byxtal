@@ -26,8 +26,8 @@ def test_pareto_filter_keeps_tradeoff_options():
 
 def test_angular_search_sigma13_smoke():
     lat_type = gbl.Lattice()
-    csl_props = cuf.enumerate_csl_props(13, 'common', lat_type)
-    csl_record = bps.csl_record_from_props(csl_props, '13a')
+    csl_record = cuf.csl_record_from_sig_id('13a', 'common', lat_type)
+    assert csl_record['sig_id'] == '13a'
 
     result = bps.search_boundary_plane(
         csl_record, lat_type, [1, 1, 1], max_area=8.0,
@@ -50,7 +50,7 @@ def test_angular_search_sigma13_smoke():
 def test_max_area_normal_generation_sigma651_smoke():
     lat_type = gbl.Lattice()
     csl_props = cuf.enumerate_csl_props(651, 'common', lat_type)
-    csl_record = bps.csl_record_from_props(csl_props, '651a')
+    csl_record = cuf.csl_record_from_props(csl_props, '651a')
 
     normals = bps._generate_normals_by_area(
         csl_record['csl_mat'], lat_type.l_p_po, max_area=100.0)

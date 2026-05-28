@@ -1155,6 +1155,26 @@ def _alpha_label(index):
     return label
 
 
+def _split_sig_id(sig_id):
+    """
+    Split a CSL label such as '13a' or '999aa' into sigma and suffix.
+    """
+    sig_id = str(sig_id).strip()
+    digit_chars = []
+    suffix_chars = []
+    for char in sig_id:
+        if char.isdigit() and not suffix_chars:
+            digit_chars.append(char)
+        elif char.isalpha():
+            suffix_chars.append(char.lower())
+        else:
+            raise ValueError('sig_id must look like "13a" or "999aa".')
+
+    if not digit_chars or not suffix_chars:
+        raise ValueError('sig_id must include a sigma number and label.')
+    return int(''.join(digit_chars)), ''.join(suffix_chars)
+
+
 def _disquat_axis_angle(dis_quat, axis_tol):
     """
     Convert a disorientation quaternion to (angle_deg, h, k, l).
@@ -1171,6 +1191,73 @@ def _disquat_axis_angle(dis_quat, axis_tol):
 
     return (float(angle_deg), int(axis_int[0]), int(axis_int[1]),
             int(axis_int[2]))
+
+
+def csl_record_from_props(csl_props, sig_id):
+    """
+    Build a single-CSL record from ``enumerate_csl_props`` output.
+
+    Parameters
+    ----------
+    csl_props : dict
+        Output from :func:`enumerate_csl_props`.
+    sig_id : str
+        Sorted CSL label such as ``'13a'``.
+
+    Returns
+    -------
+    dict
+        Single-CSL record containing the matrices and metadata for ``sig_id``.
+    """
+    sig_id = str(sig_id).strip()
+    if sig_id not in csl_props['sig_ids']:
+        raise ValueError('sig_id '+str(sig_id)+' was not found.')
+
+    record = {
+        'sig_id': sig_id,
+        'csl_rotation_id': csl_props['csl_rotation_ids'][sig_id],
+        'sig_mat': csl_props['sig_mats'][sig_id],
+        'csl_mat': csl_props['csl_mats'][sig_id],
+        'dsc_mat': csl_props['dsc_mats'][sig_id],
+        'dis_quat': csl_props['dis_quats'][sig_id],
+        'dis_axis_angle': csl_props['dis_axis_angles'][sig_id],
+        'csl_bp_props': csl_props['csl_bp_props'][sig_id],
+    }
+
+    return record
+
+
+def csl_record_from_sig_id(sig_id, sig_type, lat_type, tol=1e-6,
+                           sort_decimals=12, axis_tol=1e-6):
+    """
+    Enumerate one sigma number and return one sorted CSL record.
+
+    Parameters
+    ----------
+    sig_id : str
+        Sorted CSL label such as ``'47a'`` or ``'999aa'``.
+    sig_type : {'common', 'specific'}
+        Sigma rotation type passed to :func:`csl_rotations`.
+    lat_type : class
+        Attributes of the underlying lattice class.
+    tol : float, optional
+        Tolerance used for CSL computations.
+    sort_decimals : int, optional
+        Number of decimals used when sorting disorientation angles.
+    axis_tol : float, optional
+        Tolerance used to convert disorientation axes to integer vectors.
+
+    Returns
+    -------
+    dict
+        Single-CSL record for ``sig_id``.
+    """
+    sig_num, suffix = _split_sig_id(sig_id)
+    sig_id = str(sig_num)+suffix
+    csl_props = enumerate_csl_props(
+        sig_num, sig_type, lat_type, tol=tol,
+        sort_decimals=sort_decimals, axis_tol=axis_tol)
+    return csl_record_from_props(csl_props, sig_id)
 
 
 def enumerate_csl_props(sig_num, sig_type, lat_type, tol=1e-6,
