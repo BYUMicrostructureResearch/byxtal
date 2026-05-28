@@ -56,9 +56,10 @@ def search_boundary_plane(csl_record, lat_type, target_miller, max_area,
     -------
     dict
         ``recommended`` contains the first ranked candidate or ``None``.
-        ``candidates`` contains the first ``n_results`` records.
-        ``all_candidates`` contains every matching record.
-        ``groups`` contains records grouped by boundary-plane FZ key.
+        ``candidates`` contains the first ``n_results`` group representatives.
+        ``all_candidates`` contains every group representative.
+        ``source_candidates`` contains every matching source normal record.
+        ``groups`` contains source records grouped by boundary-plane FZ key.
     """
     _validate_csl_record(csl_record)
     target_normal_po = _normal_from_conventional_miller(
@@ -85,6 +86,7 @@ def search_boundary_plane(csl_record, lat_type, target_miller, max_area,
         candidate['target_miller'] = np.asarray(target_miller, dtype='int64')
         candidates.append(candidate)
 
+    source_candidates = candidates
     candidates, groups = _canonicalize_by_bp_symmetry(
         candidates, csl_record.get('csl_bp_props'))
     candidates.sort(key=_candidate_rank_key)
@@ -93,6 +95,7 @@ def search_boundary_plane(csl_record, lat_type, target_miller, max_area,
         'recommended': candidates[0] if candidates else None,
         'candidates': candidates[:n_results],
         'all_candidates': candidates,
+        'source_candidates': source_candidates,
         'groups': groups,
     }
 
@@ -323,7 +326,7 @@ def _search_2d_supercells(primitive_basis_p1, l_p_po, max_transform_index=2,
 
 def _canonicalize_by_bp_symmetry(candidates, csl_bp_props=None, decimals=10):
     """
-    Map normals into the boundary-plane FZ and group equivalent candidates.
+    Map normals into the boundary-plane FZ and merge equivalent candidates.
     """
     if not candidates:
         return candidates, {}
@@ -337,7 +340,7 @@ def _canonicalize_by_bp_symmetry(candidates, csl_bp_props=None, decimals=10):
             key = _direction_key(normal_po, decimals)
             candidate['fz_group_key'] = key
             groups.setdefault(key, []).append(candidate)
-        return candidates, groups
+        return _representatives_from_groups(groups), groups
 
     normals = np.array([_unit(candidate['normal_po'])
                         for candidate in candidates])
@@ -357,7 +360,102 @@ def _canonicalize_by_bp_symmetry(candidates, csl_bp_props=None, decimals=10):
         candidate['fz_group_key'] = key
         groups.setdefault(key, []).append(candidate)
 
-    return candidates, groups
+    return _representatives_from_groups(groups), groups
+
+
+def _representatives_from_groups(groups):
+    representatives = []
+    for key, source_candidates in groups.items():
+        sources = sorted(source_candidates, key=_candidate_rank_key)
+        merged_options = _merge_group_cell_options(sources)
+        representative = _source_for_option(
+            sources, merged_options['best_balanced']).copy()
+
+        representative['best_primitive'] = merged_options['best_primitive']
+        representative['best_by_area'] = merged_options['best_by_area']
+        representative['best_by_angle_error'] = (
+            merged_options['best_by_angle_error'])
+        representative['best_balanced'] = merged_options['best_balanced']
+        representative['pareto_candidates'] = (
+            merged_options['pareto_candidates'])
+        representative['source_candidates'] = sources
+        representative['source_count'] = len(sources)
+        representative['source_csl_reciprocal_indices'] = [
+            source['csl_reciprocal_index'] for source in sources]
+        representative['source_grain1_miller_conventionals'] = [
+            source['grain1_miller_conventional'] for source in sources]
+        representative['fz_group_key'] = key
+        representatives.append(representative)
+    return representatives
+
+
+def _merge_group_cell_options(source_candidates):
+    options = []
+    primitive_options = []
+    seen = set()
+    for source in source_candidates:
+        primitive_option = _annotate_cell_option(
+            source['best_primitive'], source)
+        primitive_options.append(primitive_option)
+
+        source_options = [primitive_option]
+        for option in [
+                source['best_by_area'],
+                source['best_by_angle_error'],
+                source['best_balanced']] + source['pareto_candidates']:
+            source_options.append(_annotate_cell_option(option, source))
+
+        for option in source_options:
+            key = _cell_option_key(option)
+            if key in seen:
+                continue
+            seen.add(key)
+            options.append(option)
+
+    return {
+        'best_primitive': min(primitive_options, key=lambda option: (
+            option['area'], option['angle_error_deg'],
+            option['aspect_ratio'])),
+        'best_by_area': min(options, key=lambda option: (
+            option['area'], option['angle_error_deg'],
+            option['aspect_ratio'])),
+        'best_by_angle_error': min(options, key=lambda option: (
+            option['angle_error_deg'], option['area'],
+            option['aspect_ratio'])),
+        'best_balanced': min(options, key=lambda option: option['score']),
+        'pareto_candidates': _pareto_filter(options),
+    }
+
+
+def _annotate_cell_option(option, source):
+    option_copy = option.copy()
+    option_copy['source_csl_reciprocal_index'] = (
+        source['csl_reciprocal_index'])
+    option_copy['source_grain1_miller_conventional'] = (
+        source['grain1_miller_conventional'])
+    option_copy['source_target_angle_error_deg'] = (
+        source['target_angle_error_deg'])
+    option_copy['source_fz_group_key'] = source['fz_group_key']
+    return option_copy
+
+
+def _source_for_option(sources, option):
+    option_source = tuple(np.asarray(
+        option['source_csl_reciprocal_index'], dtype='int64').reshape(3,))
+    for source in sources:
+        source_index = tuple(np.asarray(
+            source['csl_reciprocal_index'], dtype='int64').reshape(3,))
+        if source_index == option_source:
+            return source
+    return sources[0]
+
+
+def _cell_option_key(option):
+    source_index = tuple(np.asarray(
+        option['source_csl_reciprocal_index'], dtype='int64').reshape(3,))
+    transform = tuple(np.asarray(
+        option['transform_2x2'], dtype='int64').reshape(4,))
+    return source_index + transform
 
 
 def _pareto_filter(options, keys=('area', 'angle_error_deg', 'aspect_ratio')):
