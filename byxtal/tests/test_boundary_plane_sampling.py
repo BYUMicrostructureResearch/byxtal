@@ -52,7 +52,7 @@ def test_max_area_normal_generation_sigma651_smoke():
     csl_props = cuf.enumerate_csl_props(651, 'common', lat_type)
     csl_record = cuf.csl_record_from_props(csl_props, '651a')
 
-    normals = bps._generate_normals_by_area(
+    normals = bps.generate_normals_by_area(
         csl_record['csl_mat'], lat_type.l_p_po, max_area=100.0)
 
     assert len(normals) > 0

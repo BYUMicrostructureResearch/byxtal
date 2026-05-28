@@ -102,7 +102,7 @@ def sample_boundary_plane_fz(*args, **kwargs):
     Placeholder for full boundary-plane FZ coverage sampling.
 
     The first implementation milestone is single-target search. The FZ
-    coverage workflow will build on ``_generate_normals_by_area`` and
+    coverage workflow will build on ``generate_normals_by_area`` and
     ``_canonicalize_by_bp_symmetry`` after the candidate metrics are validated.
     """
     raise NotImplementedError(
@@ -123,7 +123,7 @@ def _generate_normals_near_target(csl_mat, l_p_po, target_normal_po, max_area,
     Generate primitive CSL reciprocal normals within an angular target cone.
     """
     target_normal_po = _unit(target_normal_po)
-    candidates = _generate_normals_by_area(
+    candidates = generate_normals_by_area(
         csl_mat, l_p_po, max_area, max_index=max_index, tol=tol)
 
     records = []
@@ -144,8 +144,8 @@ def _generate_normals_near_target(csl_mat, l_p_po, target_normal_po, max_area,
     return records
 
 
-def _generate_normals_by_area(csl_mat, l_p_po, max_area, max_index=None,
-                              tol=1e-9):
+def generate_normals_by_area(csl_mat, l_p_po, max_area, max_index=None,
+                             tol=1e-9):
     """
     Generate primitive CSL reciprocal normals with 2D area <= ``max_area``.
     """
