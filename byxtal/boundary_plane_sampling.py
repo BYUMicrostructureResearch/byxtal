@@ -8,6 +8,7 @@ their 2D CSL cell options.
 
 import itertools
 import math
+import os
 
 import numpy as np
 import numpy.linalg as nla
@@ -93,6 +94,7 @@ def search_boundary_plane(csl_record, lat_type, target_miller, max_area,
         'all_candidates': planes,
         'source_candidates': evaluation['source_candidates'],
         'groups': evaluation['groups'],
+        'csl_bp_props': evaluation['csl_bp_props'],
     }
 
 
@@ -137,6 +139,7 @@ def enumerate_boundary_planes_by_area(csl_record, lat_type, max_area,
         'all_candidates': planes,
         'source_candidates': evaluation['source_candidates'],
         'groups': evaluation['groups'],
+        'csl_bp_props': evaluation['csl_bp_props'],
     }
 
 
@@ -193,20 +196,96 @@ def evaluate_boundary_plane_normals(csl_record, lat_type, normal_records,
         'planes': planes,
         'source_candidates': source_candidates,
         'groups': groups,
+        'csl_bp_props': csl_record.get('csl_bp_props'),
     }
 
 
-def sample_boundary_plane_fz(*args, **kwargs):
+def sample_boundary_plane_fz(candidate_result, min_spacing_deg=0.0,
+                             max_spacing_deg=None,
+                             seed_indices=None, seed_planes=None,
+                             seed_boundary=False,
+                             cell_key='best_by_effective_area'):
     """
-    Placeholder for full boundary-plane FZ coverage sampling.
+    Select high-quality boundary-plane records with angular spacing controls.
 
-    The first implementation milestone is single-target search. The FZ
-    coverage workflow will build on ``generate_normals_by_area`` and
-    ``_canonicalize_by_bp_symmetry`` after the candidate metrics are validated.
+    Parameters
+    ----------
+    candidate_result : dict or list
+        Result from ``enumerate_boundary_planes_by_area`` or a list of plane
+        records.
+    min_spacing_deg : float, optional
+        Reject a candidate if it is closer than this to any selected plane.
+    max_spacing_deg : float, optional
+        Stop once every candidate in the finite pool is within this angular
+        distance of a selected plane. If omitted, the function walks the whole
+        quality-sorted list and keeps every candidate satisfying
+        ``min_spacing_deg``.
+    seed_indices : sequence of int, optional
+        Candidate-pool indices to include before quality-ordered selection.
+    seed_planes : sequence of dict, optional
+        Plane records to include before quality-ordered selection.
+    seed_boundary : bool, optional
+        Reserved for future FZ-vertex/boundary seeding.
+    cell_key : str, optional
+        Cell option used as the practical-quality tie breaker.
+
+    Returns
+    -------
+    dict
+        Common result envelope with selected planes in ``planes`` and
+        diagnostics describing the remaining coverage gap.
     """
-    raise NotImplementedError(
-        'Boundary-plane FZ coverage sampling is planned after '
-        'single-target search is validated.')
+    if seed_boundary:
+        raise NotImplementedError(
+            'Boundary seeding requires the planned FZ vertex/boundary '
+            'finder. Pass seed_indices or seed_planes for manual seeds.')
+
+    planes = _planes_from_result(candidate_result)
+    csl_bp_props = _csl_bp_props_from_result(candidate_result)
+    selected_indices, diagnostics = _quality_spaced_select(
+        planes,
+        csl_bp_props=csl_bp_props,
+        min_spacing_deg=min_spacing_deg,
+        max_spacing_deg=max_spacing_deg,
+        seed_indices=seed_indices,
+        seed_planes=seed_planes,
+        cell_key=cell_key)
+
+    selected_set = set(selected_indices)
+    selected_planes = [planes[idx] for idx in selected_indices]
+    unselected_planes = [
+        plane for idx, plane in enumerate(planes)
+        if idx not in selected_set]
+
+    return {
+        'method': 'fz_quality_spacing',
+        'query': {
+            'source_method': (
+                candidate_result.get('method')
+                if isinstance(candidate_result, dict) else None),
+            'min_spacing_deg': float(min_spacing_deg),
+            'max_spacing_deg': (
+                None if max_spacing_deg is None
+                else float(max_spacing_deg)),
+            'seed_indices': (
+                None if seed_indices is None else list(seed_indices)),
+            'seed_boundary': bool(seed_boundary),
+            'cell_key': cell_key,
+        },
+        'recommended': selected_planes[0] if selected_planes else None,
+        'planes': selected_planes,
+        'candidates': selected_planes,
+        'all_candidates': planes,
+        'source_candidates': (
+            candidate_result.get('source_candidates', planes)
+            if isinstance(candidate_result, dict) else planes),
+        'groups': (
+            candidate_result.get('groups', {})
+            if isinstance(candidate_result, dict) else {}),
+        'unselected_planes': unselected_planes,
+        'diagnostics': diagnostics,
+        'csl_bp_props': csl_bp_props,
+    }
 
 
 def _validate_csl_record(csl_record):
@@ -500,6 +579,241 @@ def _identity_boundary_plane_groups(candidates, decimals=10):
     return candidates, groups
 
 
+def _quality_spaced_select(planes, csl_bp_props=None, min_spacing_deg=0.0,
+                           max_spacing_deg=None, seed_indices=None,
+                           seed_planes=None,
+                           cell_key='best_by_effective_area'):
+    """
+    Quality-ordered selection with minimum and maximum spacing diagnostics.
+    """
+    plane_count = len(planes)
+    if plane_count == 0:
+        return [], _coverage_diagnostics(
+            [], [], None, None, 'empty_pool', 0,
+            min_spacing_deg=min_spacing_deg,
+            max_spacing_deg=max_spacing_deg,
+            rejected_by_min_spacing_count=0)
+
+    if min_spacing_deg < 0:
+        raise ValueError('min_spacing_deg must be nonnegative.')
+    if max_spacing_deg is not None and max_spacing_deg < 0:
+        raise ValueError('max_spacing_deg must be nonnegative.')
+
+    distance_matrix = _coverage_distance_matrix(planes, csl_bp_props)
+    selected = _initial_seed_indices(
+        planes, seed_indices=seed_indices, seed_planes=seed_planes,
+        cell_key=cell_key)
+
+    rejected_by_min_spacing = 0
+    quality_order = sorted(
+        range(plane_count),
+        key=lambda idx: _plane_quality_key(planes[idx], cell_key))
+
+    stopped_by = 'candidate_pool_exhausted'
+    for idx in quality_order:
+        if idx in selected:
+            max_gap_deg, max_gap_index, nearest = _coverage_gap(
+                distance_matrix, selected)
+            if (max_spacing_deg is not None
+                    and max_gap_deg <= max_spacing_deg):
+                stopped_by = 'max_spacing_met'
+                break
+            continue
+
+        nearest_to_selected = np.min(distance_matrix[idx, selected])
+        if nearest_to_selected < min_spacing_deg:
+            rejected_by_min_spacing += 1
+            continue
+
+        selected.append(idx)
+        max_gap_deg, max_gap_index, nearest = _coverage_gap(
+            distance_matrix, selected)
+        if (max_spacing_deg is not None
+                and max_gap_deg <= max_spacing_deg):
+            stopped_by = 'max_spacing_met'
+            break
+
+    max_gap_deg, max_gap_index, nearest = _coverage_gap(
+        distance_matrix, selected)
+    diagnostics = _coverage_diagnostics(
+        selected, nearest, max_gap_deg, max_gap_index, stopped_by,
+        plane_count,
+        min_spacing_deg=min_spacing_deg,
+        max_spacing_deg=max_spacing_deg,
+        rejected_by_min_spacing_count=rejected_by_min_spacing)
+    return selected, diagnostics
+
+
+def _initial_seed_indices(planes, seed_indices=None, seed_planes=None,
+                          cell_key='best_by_effective_area'):
+    selected = []
+    if seed_indices is not None:
+        for idx in seed_indices:
+            idx = int(idx)
+            if idx < 0 or idx >= len(planes):
+                raise ValueError('seed index out of range: '+str(idx))
+            if idx not in selected:
+                selected.append(idx)
+
+    if seed_planes is not None:
+        plane_key_to_index = {
+            _plane_identity_key(plane): idx
+            for idx, plane in enumerate(planes)}
+        for seed_plane in seed_planes:
+            key = _plane_identity_key(seed_plane)
+            if key not in plane_key_to_index:
+                raise ValueError('seed plane is not in candidate pool.')
+            idx = plane_key_to_index[key]
+            if idx not in selected:
+                selected.append(idx)
+
+    if not selected:
+        selected.append(min(
+            range(len(planes)),
+            key=lambda idx: _plane_quality_key(planes[idx], cell_key)))
+    return selected
+
+
+def _coverage_gap(distance_matrix, selected):
+    if not selected:
+        return math.inf, None, np.full(
+            distance_matrix.shape[0], math.inf, dtype='double')
+
+    nearest = np.min(distance_matrix[:, selected], axis=1)
+    selected_set = set(selected)
+    unselected = [
+        idx for idx in range(distance_matrix.shape[0])
+        if idx not in selected_set]
+    if not unselected:
+        return 0.0, None, nearest
+
+    max_gap_index = max(unselected, key=lambda idx: nearest[idx])
+    return float(nearest[max_gap_index]), max_gap_index, nearest
+
+
+def _coverage_diagnostics(selected, nearest, max_gap_deg, max_gap_index,
+                          stopped_by, plane_count, min_spacing_deg=0.0,
+                          max_spacing_deg=None,
+                          rejected_by_min_spacing_count=0):
+    if max_gap_deg is None:
+        max_gap_deg = 0.0
+    coverage_complete = None
+    if max_spacing_deg is not None:
+        coverage_complete = max_gap_deg <= max_spacing_deg
+
+    return {
+        'selected_indices': list(selected),
+        'selected_count': len(selected),
+        'unselected_count': max(plane_count-len(selected), 0),
+        'candidate_count': plane_count,
+        'min_spacing_deg': float(min_spacing_deg),
+        'max_spacing_deg': max_spacing_deg,
+        'max_gap_deg': float(max_gap_deg),
+        'max_gap_index': max_gap_index,
+        'coverage_complete': coverage_complete,
+        'stopped_by': stopped_by,
+        'rejected_by_min_spacing_count': rejected_by_min_spacing_count,
+        'nearest_selected_distance_deg': np.asarray(nearest, dtype='double'),
+    }
+
+
+def _coverage_distance_matrix(planes, csl_bp_props=None):
+    normals = np.array([
+        _coverage_normal_from_plane(plane) for plane in planes],
+        dtype='double')
+    copies = [
+        _symmetry_copies_for_normal(normal, csl_bp_props)
+        for normal in normals]
+    plane_count = len(planes)
+    distances = np.zeros((plane_count, plane_count), dtype='double')
+    for idx in range(plane_count):
+        for jdx in range(idx+1, plane_count):
+            dist_ij = _min_unoriented_angle_deg(normals[idx], copies[jdx])
+            dist_ji = _min_unoriented_angle_deg(normals[jdx], copies[idx])
+            distance = min(dist_ij, dist_ji)
+            distances[idx, jdx] = distance
+            distances[jdx, idx] = distance
+    return distances
+
+
+def _coverage_normal_from_plane(plane):
+    normal = plane.get('normal_fz_po')
+    if normal is None:
+        normal = plane['normal_po']
+    return _unit(normal)
+
+
+def _symmetry_aware_angle_deg(normal1, normal2, csl_bp_props=None):
+    copies = _symmetry_copies_for_normal(normal2, csl_bp_props)
+    return _min_unoriented_angle_deg(normal1, copies)
+
+
+def _symmetry_copies_for_normal(normal, csl_bp_props=None):
+    normal = _unit(normal)
+    if csl_bp_props is None:
+        return normal.reshape((1, 3))
+
+    file_path = _bp_symmetry_file_path(csl_bp_props['bp_symm_grp'])
+    copies = pfb.rot_symm(
+        csl_bp_props['symm_grp_ax'],
+        normal.reshape((1, 3)),
+        file_path)
+    return np.array([_unit(copy) for copy in copies[:, 0, :]],
+                    dtype='double')
+
+
+def _bp_symmetry_file_path(bp_symm_grp):
+    file_names = {
+        'Cs': 'symm_mats_Cs.pkl',
+        'C2h': 'symm_mats_C2h.pkl',
+        'D3d': 'symm_mats_D3d.pkl',
+        'D2h': 'symm_mats_D2h.pkl',
+        'D4h': 'symm_mats_D4h.pkl',
+        'D6h': 'symm_mats_D6h.pkl',
+        'D8h': 'symm_mats_D8h.pkl',
+        'Oh': 'symm_mats_Oh.pkl',
+    }
+    if bp_symm_grp not in file_names:
+        raise ValueError('Unsupported boundary-plane symmetry group: '
+                         + str(bp_symm_grp))
+    return os.path.join(
+        os.path.dirname(os.path.realpath(pfb.__file__)),
+        'data_files',
+        file_names[bp_symm_grp])
+
+
+def _min_unoriented_angle_deg(normal, copies):
+    normal = _unit(normal)
+    copies = np.asarray(copies, dtype='double').reshape((-1, 3))
+    dots = np.abs(np.dot(copies, normal))
+    dots = np.clip(dots, -1.0, 1.0)
+    return float(np.degrees(np.arccos(np.max(dots))))
+
+
+def _plane_quality_key(plane, cell_key):
+    option = _selected_cell_option(plane, cell_key)
+    return (
+        _cell_effective_area_cost(option),
+        option['area'],
+        option['angle_error_deg'],
+        option.get('aspect_ratio', 1.0),
+        tuple(np.asarray(
+            plane.get('csl_reciprocal_index', [0, 0, 0]),
+            dtype='int64').reshape(3,)))
+
+
+def _cell_effective_area_cost(option, angle_reference_deg=45.0):
+    angle_factor = option['angle_error_deg']/angle_reference_deg
+    return float((1.0 + angle_factor*angle_factor)*option['area'])
+
+
+def _plane_identity_key(plane):
+    if 'fz_group_key' in plane:
+        return ('fz', tuple(plane['fz_group_key']))
+    return ('csl', tuple(np.asarray(
+        plane['csl_reciprocal_index'], dtype='int64').reshape(3,)))
+
+
 def _representatives_from_groups(groups):
     representatives = []
     for key, source_candidates in groups.items():
@@ -785,6 +1099,7 @@ def plot_boundary_plane_fz(planes, ax=None, cell_key='best_by_effective_area',
     """
     import matplotlib.pyplot as plt
 
+    csl_bp_props = _csl_bp_props_from_result(planes)
     planes = _planes_from_result(planes)
     if ax is None:
         _, ax = plt.subplots()
@@ -800,6 +1115,7 @@ def plot_boundary_plane_fz(planes, ax=None, cell_key='best_by_effective_area',
         planes, cell_key=cell_key, angle_reference_deg=angle_reference_deg)
     sizes = _inverse_marker_sizes(
         plot_eff_area, min_marker_size, max_marker_size)
+    _plot_fz_boundary(ax, csl_bp_props)
 
     if color_by == 'plot_effective_area':
         color_values = plot_eff_area
@@ -839,7 +1155,7 @@ def plot_boundary_plane_fz(planes, ax=None, cell_key='best_by_effective_area',
     ax.set_xlabel('FZ stereographic x')
     ax.set_ylabel('FZ stereographic y')
     if title is not None:
-        ax.set_title(title)
+        ax.set_title(_title_with_bp_symmetry(title, csl_bp_props))
     ax.set_aspect('equal', adjustable='datalim')
     return ax
 
@@ -848,6 +1164,104 @@ def _planes_from_result(planes_or_result):
     if isinstance(planes_or_result, dict) and 'planes' in planes_or_result:
         return list(planes_or_result['planes'])
     return list(planes_or_result)
+
+
+def _csl_bp_props_from_result(planes_or_result):
+    if isinstance(planes_or_result, dict):
+        return planes_or_result.get('csl_bp_props')
+    return None
+
+
+def _title_with_bp_symmetry(title, csl_bp_props):
+    bp_symm_grp = _bp_symmetry_group(csl_bp_props)
+    if bp_symm_grp is None:
+        return title
+    return f'{title} ({bp_symm_grp})'
+
+
+def _plot_fz_boundary(ax, csl_bp_props):
+    bp_symm_grp = _bp_symmetry_group(csl_bp_props)
+    if bp_symm_grp is None:
+        return
+    for segment in _fz_boundary_segments(bp_symm_grp):
+        ax.plot(segment[:, 0], segment[:, 1], color='0.25',
+                linewidth=1.0, zorder=0)
+
+
+def _bp_symmetry_group(csl_bp_props):
+    if csl_bp_props is None:
+        return None
+    return csl_bp_props.get('bp_symm_grp')
+
+
+def _fz_boundary_segments(bp_symm_grp, num=181):
+    """
+    Return BP FZ boundary segments in the x-y plotting coordinates.
+    """
+    bp_symm_grp = _normalize_bp_symmetry_group(bp_symm_grp)
+    if bp_symm_grp == 'Cs':
+        return [_unit_circle_arc(-math.pi, math.pi, num)]
+    if bp_symm_grp == 'C2h':
+        return _wedge_boundary_segments(0.0, math.pi, num)
+    if bp_symm_grp == 'D2h':
+        return _wedge_boundary_segments(0.0, math.pi/2.0, num)
+    if bp_symm_grp == 'D3d':
+        alpha = math.pi/6.0
+        return _wedge_boundary_segments(-alpha, alpha, num)
+    if bp_symm_grp == 'D4h':
+        return _wedge_boundary_segments(0.0, math.pi/4.0, num)
+    if bp_symm_grp == 'D6h':
+        return _wedge_boundary_segments(0.0, math.pi/6.0, num)
+    if bp_symm_grp == 'D8h':
+        return _wedge_boundary_segments(0.0, math.pi/8.0, num)
+    if bp_symm_grp == 'Oh':
+        return _oh_boundary_segments(num)
+    raise ValueError('Unsupported boundary-plane symmetry group: '
+                     + str(bp_symm_grp))
+
+
+def _normalize_bp_symmetry_group(bp_symm_grp):
+    aliases = {
+        'C_s': 'Cs',
+        'C_2h': 'C2h',
+        'D_3d': 'D3d',
+        'D_2h': 'D2h',
+        'D_4h': 'D4h',
+        'D_6h': 'D6h',
+        'D_8h': 'D8h',
+        'O_h': 'Oh',
+    }
+    return aliases.get(bp_symm_grp, bp_symm_grp)
+
+
+def _wedge_boundary_segments(theta_min, theta_max, num):
+    return [
+        _radial_segment(theta_min, 0.0, num),
+        _unit_circle_arc(theta_min, theta_max, num),
+        _radial_segment(theta_max, 0.0, num),
+    ]
+
+
+def _unit_circle_arc(theta_min, theta_max, num):
+    theta = np.linspace(theta_min, theta_max, num)
+    return np.column_stack((np.cos(theta), np.sin(theta)))
+
+
+def _radial_segment(theta, start_radius, num):
+    radius = np.linspace(start_radius, 1.0, num)
+    return np.column_stack((radius*np.cos(theta), radius*np.sin(theta)))
+
+
+def _oh_boundary_segments(num):
+    x_axis = np.column_stack((
+        np.linspace(0.0, 1.0/math.sqrt(2.0), num),
+        np.zeros(num)))
+    diagonal_radius = np.linspace(0.0, 1.0/math.sqrt(3.0), num)
+    diagonal = np.column_stack((diagonal_radius, diagonal_radius))
+    x_vals = np.linspace(
+        1.0/math.sqrt(3.0), 1.0/math.sqrt(2.0), num)
+    curve = np.column_stack((x_vals, np.sqrt(1.0-2.0*x_vals*x_vals)))
+    return [x_axis, curve, diagonal]
 
 
 def _selected_cell_option(plane, cell_key):

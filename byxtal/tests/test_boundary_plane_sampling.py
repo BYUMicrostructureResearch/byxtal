@@ -87,6 +87,128 @@ def test_plot_effective_area_uses_common_minimum_area():
     assert np.allclose(values, np.array([1.0, 4.0]))
 
 
+def test_fz_boundary_segments_include_expected_symmetry_shapes():
+    d4h_segments = bps._fz_boundary_segments('D4h', num=5)
+    assert len(d4h_segments) == 3
+    assert np.allclose(d4h_segments[0][0], np.array([0.0, 0.0]))
+    assert np.allclose(d4h_segments[0][-1], np.array([1.0, 0.0]))
+    assert np.allclose(
+        d4h_segments[2][-1],
+        np.array([np.sqrt(0.5), np.sqrt(0.5)]))
+
+    oh_segments = bps._fz_boundary_segments('Oh', num=5)
+    assert len(oh_segments) == 3
+    assert np.allclose(oh_segments[0][-1], np.array([
+        1.0/np.sqrt(2.0), 0.0]))
+    assert np.allclose(oh_segments[2][-1], np.array([
+        1.0/np.sqrt(3.0), 1.0/np.sqrt(3.0)]))
+
+
+def test_plot_boundary_plane_fz_draws_boundary_and_symmetry_title():
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+
+    result = {
+        'method': 'synthetic',
+        'planes': [
+            _simple_plane([1.0, 0.0, 0.0], [1, 0, 0], area=1.0),
+            _simple_plane([0.0, 1.0, 0.0], [0, 1, 0], area=2.0),
+        ],
+        'csl_bp_props': {
+            'bp_symm_grp': 'D4h',
+        },
+    }
+
+    fig, ax = plt.subplots()
+    bps.plot_boundary_plane_fz(result, ax=ax, title='test title')
+
+    assert ax.get_title() == 'test title (D4h)'
+    assert len(ax.lines) == 3
+    assert len(ax.collections) == 1
+    assert all(line.get_zorder() == 0 for line in ax.lines)
+    plt.close(fig)
+
+
+def _simple_plane(normal, csl_index, area=1.0, angle_error=0.0):
+    option = {
+        'area': area,
+        'angle_error_deg': angle_error,
+        'angle_deg': 90.0-angle_error,
+        'aspect_ratio': 1.0,
+        'effective_area': area,
+    }
+    return {
+        'csl_reciprocal_index': np.array(csl_index, dtype='int64'),
+        'grain1_miller_conventional': np.array(csl_index, dtype='int64'),
+        'normal_po': np.array(normal, dtype='double'),
+        'normal_fz_po': np.array(normal, dtype='double'),
+        'normal_fz_stereo': np.array(normal, dtype='double'),
+        'best_by_effective_area': option,
+    }
+
+
+def test_sample_boundary_plane_fz_selects_quality_ordered_spaced_points():
+    result = {
+        'method': 'synthetic',
+        'planes': [
+            _simple_plane([1.0, 0.0, 0.0], [1, 0, 0], area=1.0),
+            _simple_plane([0.99, 0.1, 0.0], [1, 1, 0], area=1.5),
+            _simple_plane([0.0, 1.0, 0.0], [0, 1, 0], area=2.0),
+            _simple_plane([0.0, 0.0, 1.0], [0, 0, 1], area=3.0),
+        ],
+    }
+
+    sampled = bps.sample_boundary_plane_fz(
+        result, min_spacing_deg=20.0)
+
+    assert sampled['method'] == 'fz_quality_spacing'
+    assert sampled['diagnostics']['selected_indices'] == [0, 2, 3]
+    assert sampled['diagnostics']['selected_count'] == 3
+    assert sampled['diagnostics']['rejected_by_min_spacing_count'] == 1
+    assert sampled['diagnostics']['stopped_by'] == 'candidate_pool_exhausted'
+
+
+def test_sample_boundary_plane_fz_stops_when_max_spacing_met():
+    result = {
+        'method': 'synthetic',
+        'planes': [
+            _simple_plane([1.0, 0.0, 0.0], [1, 0, 0], area=1.0),
+            _simple_plane([0.0, 1.0, 0.0], [0, 1, 0], area=2.0),
+            _simple_plane([0.0, 0.0, 1.0], [0, 0, 1], area=3.0),
+        ],
+    }
+
+    loose = bps.sample_boundary_plane_fz(
+        result, min_spacing_deg=0.0, max_spacing_deg=100.0)
+    tight = bps.sample_boundary_plane_fz(
+        result, min_spacing_deg=100.0, max_spacing_deg=10.0)
+
+    assert loose['diagnostics']['selected_count'] == 1
+    assert loose['diagnostics']['coverage_complete']
+    assert loose['diagnostics']['stopped_by'] == 'max_spacing_met'
+    assert tight['diagnostics']['selected_count'] == 1
+    assert not tight['diagnostics']['coverage_complete']
+    assert tight['diagnostics']['stopped_by'] == 'candidate_pool_exhausted'
+
+
+def test_sample_boundary_plane_fz_rejects_boundary_seeding_for_now():
+    result = {
+        'method': 'synthetic',
+        'planes': [
+            _simple_plane([1.0, 0.0, 0.0], [1, 0, 0], area=1.0),
+        ],
+    }
+
+    try:
+        bps.sample_boundary_plane_fz(
+            result, seed_boundary=True)
+    except NotImplementedError:
+        pass
+    else:
+        raise AssertionError('seed_boundary should not be implemented yet.')
+
+
 def test_boundary_plane_group_merges_source_candidates():
     def option(area, angle_error, aspect_ratio, score, transform):
         return {
@@ -219,6 +341,25 @@ def test_max_area_enumeration_sigma13_smoke():
     assert len(plane['pareto_candidates']) > 0
 
 
+def test_fz_quality_spacing_sigma13_smoke():
+    lat_type = gbl.Lattice()
+    csl_record = cuf.csl_record_from_sig_id('13a', 'common', lat_type)
+    area_result = bps.enumerate_boundary_planes_by_area(
+        csl_record, lat_type, max_area=8.0,
+        max_transform_index=1, max_area_multiplier=4)
+
+    sampled = bps.sample_boundary_plane_fz(
+        area_result, min_spacing_deg=10.0, max_spacing_deg=35.0)
+
+    assert sampled['method'] == 'fz_quality_spacing'
+    assert len(sampled['planes']) > 0
+    assert sampled['diagnostics']['selected_count'] == len(
+        sampled['planes'])
+    assert sampled['diagnostics']['candidate_count'] == len(
+        area_result['planes'])
+    assert sampled['diagnostics']['max_gap_deg'] >= 0
+
+
 def test_target_search_and_area_enumeration_share_plane_fields():
     lat_type = gbl.Lattice()
     csl_record = cuf.csl_record_from_sig_id('13a', 'common', lat_type)
@@ -251,8 +392,14 @@ if __name__ == '__main__':
     test_effective_area_scales_area_by_angle_error()
     test_search_2d_supercells_reports_best_by_effective_area()
     test_plot_effective_area_uses_common_minimum_area()
+    test_fz_boundary_segments_include_expected_symmetry_shapes()
+    test_plot_boundary_plane_fz_draws_boundary_and_symmetry_title()
+    test_sample_boundary_plane_fz_selects_quality_ordered_spaced_points()
+    test_sample_boundary_plane_fz_stops_when_max_spacing_met()
+    test_sample_boundary_plane_fz_rejects_boundary_seeding_for_now()
     test_boundary_plane_group_merges_source_candidates()
     test_angular_search_sigma13_smoke()
     test_max_area_normal_generation_sigma651_smoke()
     test_max_area_enumeration_sigma13_smoke()
+    test_fz_quality_spacing_sigma13_smoke()
     test_target_search_and_area_enumeration_share_plane_fields()
