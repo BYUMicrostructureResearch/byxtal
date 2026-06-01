@@ -50,6 +50,43 @@ def test_effective_area_scales_area_by_angle_error():
     assert options[1]['effective_area'] == 4.0
 
 
+def test_search_2d_supercells_reports_best_by_effective_area():
+    basis = np.array([
+        [1.0, 0.2],
+        [0.0, 1.0],
+        [0.0, 0.0],
+    ])
+    cell_options = bps._search_2d_supercells(
+        basis, np.eye(3), max_transform_index=1,
+        max_area_multiplier=4)
+
+    expected = min(cell_options['cell_options'], key=lambda option: (
+        option['effective_area'], option['area'],
+        option['angle_error_deg'], option['aspect_ratio']))
+    assert cell_options['best_by_effective_area'] is expected
+
+
+def test_plot_effective_area_uses_common_minimum_area():
+    planes = [
+        {
+            'best_by_effective_area': {
+                'area': 2.0,
+                'angle_error_deg': 0.0,
+            },
+        },
+        {
+            'best_by_effective_area': {
+                'area': 4.0,
+                'angle_error_deg': 45.0,
+            },
+        },
+    ]
+
+    values = bps.plot_effective_area_values(planes)
+
+    assert np.allclose(values, np.array([1.0, 4.0]))
+
+
 def test_boundary_plane_group_merges_source_candidates():
     def option(area, angle_error, aspect_ratio, score, transform):
         return {
@@ -61,6 +98,7 @@ def test_boundary_plane_group_merges_source_candidates():
             'angle_deg': 90.0-angle_error,
             'angle_error_deg': angle_error,
             'aspect_ratio': aspect_ratio,
+            'effective_area': area,
             'score': score,
         }
 
@@ -74,6 +112,7 @@ def test_boundary_plane_group_merges_source_candidates():
             'best_primitive': best_option,
             'best_by_area': best_option,
             'best_by_angle_error': best_option,
+            'best_by_effective_area': best_option,
             'best_balanced': best_option,
             'pareto_candidates': [best_option],
         }
@@ -99,6 +138,10 @@ def test_boundary_plane_group_merges_source_candidates():
     assert np.array_equal(
         representative['best_balanced']['source_csl_reciprocal_index'],
         np.array([0, 1, 0]))
+    assert np.array_equal(
+        representative['best_by_effective_area'][
+            'source_csl_reciprocal_index'],
+        np.array([0, 1, 0]))
     assert len(representative['source_candidates']) == 2
 
 
@@ -122,6 +165,7 @@ def test_angular_search_sigma13_smoke():
     assert candidate['best_by_area']['area'] > 0
     assert 0 <= candidate['best_by_angle_error']['angle_deg'] <= 180
     assert candidate['best_by_angle_error']['aspect_ratio'] >= 1
+    assert candidate['best_by_effective_area']['effective_area'] >= 1
     assert len(candidate['pareto_candidates']) > 0
 
 
@@ -134,10 +178,70 @@ def test_max_area_normal_generation_sigma651_smoke():
         csl_record['csl_mat'], lat_type.l_p_po, max_area=100.0)
 
     assert len(normals) > 0
+    assert 'cell_options' not in normals[0]
     assert normals[0]['primitive_area'] > 0
     assert np.array_equal(
         bps._canonicalize_plane_index(normals[0]['csl_reciprocal_index']),
         normals[0]['csl_reciprocal_index'])
+
+
+def test_max_area_enumeration_sigma13_smoke():
+    lat_type = gbl.Lattice()
+    csl_record = cuf.csl_record_from_sig_id('13a', 'common', lat_type)
+
+    result = bps.enumerate_boundary_planes_by_area(
+        csl_record, lat_type, max_area=8.0,
+        max_transform_index=1, max_area_multiplier=4)
+
+    assert result['method'] == 'max_area'
+    assert result['recommended'] is None
+    assert len(result['planes']) > 0
+
+    plane = result['planes'][0]
+    common_fields = [
+        'csl_reciprocal_index',
+        'grain1_miller_conventional',
+        'normal_po',
+        'normal_fz_po',
+        'normal_fz_stereo',
+        'primitive_basis',
+        'primitive_metrics',
+        'cell_options',
+        'pareto_candidates',
+        'best_primitive',
+        'best_by_area',
+        'best_by_angle_error',
+        'best_by_effective_area',
+    ]
+    for field in common_fields:
+        assert field in plane
+    assert len(plane['cell_options']) > 0
+    assert len(plane['pareto_candidates']) > 0
+
+
+def test_target_search_and_area_enumeration_share_plane_fields():
+    lat_type = gbl.Lattice()
+    csl_record = cuf.csl_record_from_sig_id('13a', 'common', lat_type)
+
+    target_result = bps.search_boundary_plane(
+        csl_record, lat_type, [1, 1, 1], max_area=8.0,
+        angle_radius_deg=25.0, max_transform_index=1,
+        max_area_multiplier=4, n_results=5)
+    area_result = bps.enumerate_boundary_planes_by_area(
+        csl_record, lat_type, max_area=8.0,
+        max_transform_index=1, max_area_multiplier=4)
+
+    target_fields = set(target_result['planes'][0])
+    area_fields = set(area_result['planes'][0])
+
+    for field in [
+            'csl_reciprocal_index',
+            'grain1_miller_conventional',
+            'cell_options',
+            'pareto_candidates',
+            'best_by_effective_area']:
+        assert field in target_fields
+        assert field in area_fields
 
 
 if __name__ == '__main__':
@@ -145,6 +249,10 @@ if __name__ == '__main__':
     test_pareto_filter_keeps_tradeoff_options()
     test_pareto_filter_ignores_aspect_ratio()
     test_effective_area_scales_area_by_angle_error()
+    test_search_2d_supercells_reports_best_by_effective_area()
+    test_plot_effective_area_uses_common_minimum_area()
     test_boundary_plane_group_merges_source_candidates()
     test_angular_search_sigma13_smoke()
     test_max_area_normal_generation_sigma651_smoke()
+    test_max_area_enumeration_sigma13_smoke()
+    test_target_search_and_area_enumeration_share_plane_fields()

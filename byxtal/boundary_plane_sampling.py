@@ -62,39 +62,135 @@ def search_boundary_plane(csl_record, lat_type, target_miller, max_area,
         ``groups`` contains source records grouped by boundary-plane FZ key.
     """
     _validate_csl_record(csl_record)
-    target_normal_po = _normal_from_conventional_miller(
-        target_miller, lat_type)
-
     normal_records = _generate_normals_near_target(
-        csl_record['csl_mat'], lat_type.l_p_po, target_normal_po, max_area,
+        csl_record['csl_mat'], lat_type.l_p_po,
+        _normal_from_conventional_miller(target_miller, lat_type), max_area,
         angle_radius_deg, max_index=max_index, tol=tol)
+
+    evaluation = evaluate_boundary_plane_normals(
+        csl_record, lat_type, normal_records,
+        target_miller=target_miller,
+        max_transform_index=max_transform_index,
+        max_area_multiplier=max_area_multiplier,
+        reduce_by_symmetry=True,
+        tol=tol)
+    planes = evaluation['planes']
+    planes.sort(key=_candidate_rank_key)
+
+    return {
+        'method': 'target_search',
+        'query': {
+            'target_miller': np.asarray(target_miller, dtype='int64'),
+            'max_area': float(max_area),
+            'angle_radius_deg': float(angle_radius_deg),
+            'max_index': max_index,
+            'max_transform_index': int(max_transform_index),
+            'max_area_multiplier': int(max_area_multiplier),
+        },
+        'recommended': planes[0] if planes else None,
+        'planes': planes,
+        'candidates': planes[:n_results],
+        'all_candidates': planes,
+        'source_candidates': evaluation['source_candidates'],
+        'groups': evaluation['groups'],
+    }
+
+
+def enumerate_boundary_planes_by_area(csl_record, lat_type, max_area,
+                                      max_index=None,
+                                      max_transform_index=2,
+                                      max_area_multiplier=8,
+                                      reduce_by_symmetry=True, tol=1e-6):
+    """
+    Enumerate full boundary-plane records from a max-area normal pool.
+
+    ``generate_normals_by_area`` remains the low-level generator for CSL
+    reciprocal normals. This function evaluates each generated normal into the
+    common plane-record shape used by ``search_boundary_plane``.
+    """
+    _validate_csl_record(csl_record)
+    normal_records = generate_normals_by_area(
+        csl_record['csl_mat'], lat_type.l_p_po, max_area,
+        max_index=max_index, tol=tol)
+
+    evaluation = evaluate_boundary_plane_normals(
+        csl_record, lat_type, normal_records,
+        max_transform_index=max_transform_index,
+        max_area_multiplier=max_area_multiplier,
+        reduce_by_symmetry=reduce_by_symmetry,
+        tol=tol)
+    planes = evaluation['planes']
+    planes.sort(key=_max_area_plane_rank_key)
+
+    return {
+        'method': 'max_area',
+        'query': {
+            'max_area': float(max_area),
+            'max_index': max_index,
+            'max_transform_index': int(max_transform_index),
+            'max_area_multiplier': int(max_area_multiplier),
+            'reduce_by_symmetry': bool(reduce_by_symmetry),
+        },
+        'recommended': None,
+        'planes': planes,
+        'candidates': planes,
+        'all_candidates': planes,
+        'source_candidates': evaluation['source_candidates'],
+        'groups': evaluation['groups'],
+    }
+
+
+def evaluate_boundary_plane_normals(csl_record, lat_type, normal_records,
+                                    target_miller=None,
+                                    target_normal_po=None,
+                                    max_transform_index=2,
+                                    max_area_multiplier=8,
+                                    reduce_by_symmetry=True, tol=1e-6):
+    """
+    Evaluate CSL reciprocal normals into common boundary-plane records.
+    """
+    _validate_csl_record(csl_record)
+    if target_miller is not None:
+        target_normal_po = _normal_from_conventional_miller(
+            target_miller, lat_type)
+    elif target_normal_po is not None:
+        target_normal_po = _unit(target_normal_po)
 
     candidates = []
     for normal_record in normal_records:
+        csl_index = _normal_record_index(normal_record)
         candidate = _compute_2d_csl_metrics(
-            normal_record['csl_reciprocal_index'],
+            csl_index,
             csl_record['csl_mat'],
             lat_type,
             target_normal_po=target_normal_po,
             max_transform_index=max_transform_index,
             max_area_multiplier=max_area_multiplier,
             tol=tol)
-
-        candidate['sig_id'] = csl_record.get('sig_id')
-        candidate['csl_rotation_id'] = csl_record.get('csl_rotation_id')
-        candidate['sig_mat'] = csl_record.get('sig_mat')
-        candidate['target_miller'] = np.asarray(target_miller, dtype='int64')
+        _add_csl_metadata(candidate, csl_record)
+        if target_miller is not None:
+            candidate['target_miller'] = np.asarray(
+                target_miller, dtype='int64')
         candidates.append(candidate)
 
     source_candidates = candidates
-    candidates, groups = _canonicalize_by_bp_symmetry(
-        candidates, csl_record.get('csl_bp_props'))
-    candidates.sort(key=_candidate_rank_key)
+    if reduce_by_symmetry:
+        planes, groups = _canonicalize_by_bp_symmetry(
+            candidates, csl_record.get('csl_bp_props'))
+    else:
+        planes, groups = _identity_boundary_plane_groups(candidates)
 
     return {
-        'recommended': candidates[0] if candidates else None,
-        'candidates': candidates[:n_results],
-        'all_candidates': candidates,
+        'method': 'evaluate_normals',
+        'query': {
+            'target_miller': (
+                None if target_miller is None
+                else np.asarray(target_miller, dtype='int64')),
+            'max_transform_index': int(max_transform_index),
+            'max_area_multiplier': int(max_area_multiplier),
+            'reduce_by_symmetry': bool(reduce_by_symmetry),
+        },
+        'planes': planes,
         'source_candidates': source_candidates,
         'groups': groups,
     }
@@ -117,6 +213,20 @@ def _validate_csl_record(csl_record):
     for key in ('csl_mat', 'sig_mat'):
         if key not in csl_record:
             raise ValueError('csl_record is missing required key: '+key)
+
+
+def _normal_record_index(normal_record):
+    if isinstance(normal_record, dict):
+        return normal_record['csl_reciprocal_index']
+    return normal_record
+
+
+def _add_csl_metadata(candidate, csl_record):
+    for key in (
+            'sig_id', 'csl_rotation_id', 'sig_mat', 'dsc_mat',
+            'dis_quat', 'dis_axis_angle'):
+        if key in csl_record:
+            candidate[key] = csl_record[key]
 
 
 def _generate_normals_near_target(csl_mat, l_p_po, target_normal_po, max_area,
@@ -267,6 +377,7 @@ def _compute_2d_csl_metrics(csl_index, csl_mat, lat_type,
         'best_primitive': cell_options['best_primitive'],
         'best_by_area': cell_options['best_by_area'],
         'best_by_angle_error': cell_options['best_by_angle_error'],
+        'best_by_effective_area': cell_options['best_by_effective_area'],
         'best_balanced': cell_options['best_balanced'],
         'cell_options': cell_options['cell_options'],
         'pareto_candidates': cell_options['pareto_candidates'],
@@ -323,6 +434,9 @@ def _search_2d_supercells(primitive_basis_p1, l_p_po, max_transform_index=2,
         'best_by_angle_error': min(options, key=lambda option: (
             option['angle_error_deg'], option['area'],
             option['aspect_ratio'])),
+        'best_by_effective_area': min(options, key=lambda option: (
+            option['effective_area'], option['area'],
+            option['angle_error_deg'], option['aspect_ratio'])),
         'best_balanced': min(options, key=lambda option: option['score']),
         'cell_options': options,
         'pareto_candidates': _pareto_filter(options),
@@ -368,18 +482,38 @@ def _canonicalize_by_bp_symmetry(candidates, csl_bp_props=None, decimals=10):
     return _representatives_from_groups(groups), groups
 
 
+def _identity_boundary_plane_groups(candidates, decimals=10):
+    groups = {}
+    for candidate in candidates:
+        normal_po = _unit(candidate['normal_po'])
+        candidate['normal_fz_po'] = normal_po
+        candidate['normal_fz_stereo'] = normal_po
+        key = _direction_key(normal_po, decimals)
+        candidate['fz_group_key'] = key
+        candidate['source_candidates'] = [candidate]
+        candidate['source_count'] = 1
+        candidate['source_csl_reciprocal_indices'] = [
+            candidate['csl_reciprocal_index']]
+        candidate['source_grain1_miller_conventionals'] = [
+            candidate['grain1_miller_conventional']]
+        groups.setdefault(key, []).append(candidate)
+    return candidates, groups
+
+
 def _representatives_from_groups(groups):
     representatives = []
     for key, source_candidates in groups.items():
         sources = sorted(source_candidates, key=_candidate_rank_key)
         merged_options = _merge_group_cell_options(sources)
         representative = _source_for_option(
-            sources, merged_options['best_balanced']).copy()
+            sources, merged_options['best_by_effective_area']).copy()
 
         representative['best_primitive'] = merged_options['best_primitive']
         representative['best_by_area'] = merged_options['best_by_area']
         representative['best_by_angle_error'] = (
             merged_options['best_by_angle_error'])
+        representative['best_by_effective_area'] = (
+            merged_options['best_by_effective_area'])
         representative['best_balanced'] = merged_options['best_balanced']
         representative['cell_options'] = merged_options['cell_options']
         representative['pareto_candidates'] = (
@@ -409,6 +543,7 @@ def _merge_group_cell_options(source_candidates):
             source_options = [
                 source['best_by_area'],
                 source['best_by_angle_error'],
+                source['best_by_effective_area'],
                 source['best_balanced']] + source['pareto_candidates']
 
         for option in source_options:
@@ -433,6 +568,9 @@ def _merge_group_cell_options(source_candidates):
         'best_by_angle_error': min(options, key=lambda option: (
             option['angle_error_deg'], option['area'],
             option['aspect_ratio'])),
+        'best_by_effective_area': min(options, key=lambda option: (
+            option['effective_area'], option['area'],
+            option['angle_error_deg'], option['aspect_ratio'])),
         'best_balanced': min(options, key=lambda option: option['score']),
         'cell_options': options,
         'pareto_candidates': _pareto_filter(options),
@@ -614,6 +752,138 @@ def plot_pareto_front(candidate_or_options, ax=None, color_by='effective_area',
     return ax
 
 
+def plot_effective_area_values(planes, cell_key='best_by_effective_area',
+                               angle_reference_deg=45.0):
+    """
+    Compute plot-level effective area values across several plane records.
+
+    The returned values are normalized by the minimum selected-cell area among
+    all supplied planes, so they can be compared across different normals.
+    """
+    planes = _planes_from_result(planes)
+    if not planes:
+        return np.array([], dtype='double')
+
+    options = [_selected_cell_option(plane, cell_key) for plane in planes]
+    min_area = min(option['area'] for option in options)
+    return np.array([
+        _effective_area(
+            option['area'],
+            option['angle_error_deg'],
+            min_area,
+            angle_reference_deg=angle_reference_deg)
+        for option in options], dtype='double')
+
+
+def plot_boundary_plane_fz(planes, ax=None, cell_key='best_by_effective_area',
+                           color_by='plot_effective_area',
+                           min_marker_size=24, max_marker_size=160,
+                           title=None, annotate=False,
+                           angle_reference_deg=45.0):
+    """
+    Plot boundary-plane FZ points with marker size scaled by cell quality.
+    """
+    import matplotlib.pyplot as plt
+
+    planes = _planes_from_result(planes)
+    if ax is None:
+        _, ax = plt.subplots()
+
+    if not planes:
+        ax.set_xlabel('FZ stereographic x')
+        ax.set_ylabel('FZ stereographic y')
+        return ax
+
+    points = np.array([_plane_stereo_point(plane) for plane in planes],
+                      dtype='double')
+    plot_eff_area = plot_effective_area_values(
+        planes, cell_key=cell_key, angle_reference_deg=angle_reference_deg)
+    sizes = _inverse_marker_sizes(
+        plot_eff_area, min_marker_size, max_marker_size)
+
+    if color_by == 'plot_effective_area':
+        color_values = plot_eff_area
+        color_label = 'plot effective area'
+    elif color_by is None:
+        color_values = None
+        color_label = None
+    else:
+        color_values = np.array([
+            _selected_cell_option(plane, cell_key)[color_by]
+            for plane in planes], dtype='double')
+        color_label = color_by.replace('_', ' ')
+
+    scatter_kwargs = {
+        's': sizes,
+        'alpha': 0.75,
+        'edgecolors': '0.2',
+        'linewidths': 0.5,
+    }
+    if color_values is None:
+        scatter = ax.scatter(points[:, 0], points[:, 1],
+                             color='tab:blue', **scatter_kwargs)
+    else:
+        scatter = ax.scatter(points[:, 0], points[:, 1], c=color_values,
+                             **scatter_kwargs)
+        cbar = ax.figure.colorbar(scatter, ax=ax)
+        cbar.set_label(color_label)
+
+    if annotate:
+        for point, plane in zip(points, planes):
+            label = str(np.asarray(
+                plane['grain1_miller_conventional'],
+                dtype='int64').reshape(3,).tolist())
+            ax.annotate(label, point, textcoords='offset points',
+                        xytext=(4, 4), fontsize=8)
+
+    ax.set_xlabel('FZ stereographic x')
+    ax.set_ylabel('FZ stereographic y')
+    if title is not None:
+        ax.set_title(title)
+    ax.set_aspect('equal', adjustable='datalim')
+    return ax
+
+
+def _planes_from_result(planes_or_result):
+    if isinstance(planes_or_result, dict) and 'planes' in planes_or_result:
+        return list(planes_or_result['planes'])
+    return list(planes_or_result)
+
+
+def _selected_cell_option(plane, cell_key):
+    try:
+        return plane[cell_key]
+    except KeyError as exc:
+        raise ValueError('Plane record is missing cell option: '+cell_key) \
+            from exc
+
+
+def _plane_stereo_point(plane):
+    point = plane.get('normal_fz_stereo')
+    if point is None:
+        point = plane.get('normal_fz_po', plane['normal_po'])
+    point = np.asarray(point, dtype='double').reshape(-1,)
+    if point.size < 2:
+        raise ValueError('Plane stereographic point must have at least 2 values.')
+    return point[:2]
+
+
+def _inverse_marker_sizes(values, min_marker_size, max_marker_size):
+    values = np.asarray(values, dtype='double')
+    if min_marker_size <= 0 or max_marker_size <= 0:
+        raise ValueError('Marker sizes must be positive.')
+    if max_marker_size < min_marker_size:
+        raise ValueError('max_marker_size must be >= min_marker_size.')
+
+    quality = 1.0/np.maximum(values, np.finfo(float).eps)
+    q_min = np.min(quality)
+    q_max = np.max(quality)
+    if np.isclose(q_min, q_max):
+        return np.full(values.shape, (min_marker_size+max_marker_size)/2.0)
+    scaled = (quality-q_min)/(q_max-q_min)
+    return min_marker_size + scaled*(max_marker_size-min_marker_size)
+
+
 def _assign_effective_area(options):
     min_area = min(option['area'] for option in options)
     for option in options:
@@ -701,9 +971,20 @@ def _conventional_basis_po(lat_type):
 
 
 def _candidate_rank_key(candidate):
+    target_angle_error = candidate.get('target_angle_error_deg')
+    if target_angle_error is None:
+        target_angle_error = 0.0
     return (
-        candidate['best_balanced']['score'],
-        candidate['target_angle_error_deg'],
+        target_angle_error,
+        candidate['best_by_effective_area']['effective_area'],
+        candidate['best_by_area']['area'],
+        candidate['best_by_angle_error']['angle_error_deg'],
+        tuple(candidate['csl_reciprocal_index']))
+
+
+def _max_area_plane_rank_key(candidate):
+    return (
+        candidate['best_by_effective_area']['effective_area'],
         candidate['best_by_area']['area'],
         candidate['best_by_angle_error']['angle_error_deg'],
         tuple(candidate['csl_reciprocal_index']))
