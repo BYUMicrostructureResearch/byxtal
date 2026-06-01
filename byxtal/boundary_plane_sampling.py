@@ -268,6 +268,7 @@ def _compute_2d_csl_metrics(csl_index, csl_mat, lat_type,
         'best_by_area': cell_options['best_by_area'],
         'best_by_angle_error': cell_options['best_by_angle_error'],
         'best_balanced': cell_options['best_balanced'],
+        'cell_options': cell_options['cell_options'],
         'pareto_candidates': cell_options['pareto_candidates'],
     }
 
@@ -306,6 +307,9 @@ def _search_2d_supercells(primitive_basis_p1, l_p_po, max_transform_index=2,
         seen.add(key)
         options.append(option)
 
+    min_area = _assign_effective_area(options)
+    _set_effective_area(best_primitive, min_area)
+
     options.sort(key=lambda option: (
         option['area'],
         option['angle_error_deg'],
@@ -320,6 +324,7 @@ def _search_2d_supercells(primitive_basis_p1, l_p_po, max_transform_index=2,
             option['angle_error_deg'], option['area'],
             option['aspect_ratio'])),
         'best_balanced': min(options, key=lambda option: option['score']),
+        'cell_options': options,
         'pareto_candidates': _pareto_filter(options),
     }
 
@@ -376,6 +381,7 @@ def _representatives_from_groups(groups):
         representative['best_by_angle_error'] = (
             merged_options['best_by_angle_error'])
         representative['best_balanced'] = merged_options['best_balanced']
+        representative['cell_options'] = merged_options['cell_options']
         representative['pareto_candidates'] = (
             merged_options['pareto_candidates'])
         representative['source_candidates'] = sources
@@ -398,19 +404,24 @@ def _merge_group_cell_options(source_candidates):
             source['best_primitive'], source)
         primitive_options.append(primitive_option)
 
-        source_options = [primitive_option]
-        for option in [
+        source_options = source.get('cell_options')
+        if source_options is None:
+            source_options = [
                 source['best_by_area'],
                 source['best_by_angle_error'],
-                source['best_balanced']] + source['pareto_candidates']:
-            source_options.append(_annotate_cell_option(option, source))
+                source['best_balanced']] + source['pareto_candidates']
 
         for option in source_options:
+            option = _annotate_cell_option(option, source)
             key = _cell_option_key(option)
             if key in seen:
                 continue
             seen.add(key)
             options.append(option)
+
+    min_area = _assign_effective_area(options)
+    for option in primitive_options:
+        _set_effective_area(option, min_area)
 
     return {
         'best_primitive': min(primitive_options, key=lambda option: (
@@ -423,6 +434,7 @@ def _merge_group_cell_options(source_candidates):
             option['angle_error_deg'], option['area'],
             option['aspect_ratio'])),
         'best_balanced': min(options, key=lambda option: option['score']),
+        'cell_options': options,
         'pareto_candidates': _pareto_filter(options),
     }
 
@@ -458,7 +470,7 @@ def _cell_option_key(option):
     return source_index + transform
 
 
-def _pareto_filter(options, keys=('area', 'angle_error_deg', 'aspect_ratio')):
+def _pareto_filter(options, keys=('area', 'angle_error_deg')):
     """
     Return options that are not dominated across the selected metrics.
     """
@@ -503,6 +515,123 @@ def _cell_option(primitive_basis_p1, l_p_po, transform):
         'aspect_ratio': metrics['aspect_ratio'],
         'score': float(score),
     }
+
+
+def plot_pareto_front(candidate_or_options, ax=None, color_by='effective_area',
+                      title=None, annotate=False):
+    """
+    Plot cell-option area versus orthogonality error.
+
+    Parameters
+    ----------
+    candidate_or_options : dict or list
+        Candidate record with ``cell_options`` and ``pareto_candidates``, or a
+        list of cell-option records.
+    ax : matplotlib.axes.Axes, optional
+        Axes to plot into. A new axes is created when omitted.
+    color_by : str or None, optional
+        Cell-option key used to color all candidate points. Useful values are
+        ``'effective_area'`` and ``'aspect_ratio'``.
+    title : str, optional
+        Plot title.
+    annotate : bool, optional
+        If True, annotate Pareto points by their source CSL reciprocal index.
+
+    Returns
+    -------
+    matplotlib.axes.Axes
+        Axes containing the plot.
+    """
+    import matplotlib.pyplot as plt
+
+    if isinstance(candidate_or_options, dict):
+        options = candidate_or_options.get('cell_options')
+        if options is None:
+            options = candidate_or_options['pareto_candidates']
+        pareto_options = candidate_or_options['pareto_candidates']
+    else:
+        options = list(candidate_or_options)
+        pareto_options = _pareto_filter(options)
+
+    if ax is None:
+        _, ax = plt.subplots()
+
+    area = np.array([option['area'] for option in options], dtype='double')
+    angle_error = np.array(
+        [option['angle_error_deg'] for option in options], dtype='double')
+    pareto_options = sorted(
+        pareto_options,
+        key=lambda option: (option['area'], option['angle_error_deg']))
+    pareto_area = np.array(
+        [option['area'] for option in pareto_options], dtype='double')
+    pareto_angle_error = np.array(
+        [option['angle_error_deg'] for option in pareto_options],
+        dtype='double')
+
+    if len(pareto_options) > 1:
+        ax.plot(pareto_area, pareto_angle_error, color='tab:red',
+                linewidth=1.5, label='Pareto front', zorder=1)
+
+    scatter_kwargs = {
+        's': 24,
+        'alpha': 0.55,
+        'label': 'candidate cell options',
+        'zorder': 2,
+    }
+    if color_by is None:
+        scatter_kwargs['color'] = '0.65'
+        scatter = ax.scatter(area, angle_error, **scatter_kwargs)
+    else:
+        color_values = np.array([option[color_by] for option in options],
+                                dtype='double')
+        scatter = ax.scatter(area, angle_error, c=color_values,
+                             **scatter_kwargs)
+        cbar = ax.figure.colorbar(scatter, ax=ax)
+        cbar.set_label(color_by.replace('_', ' '))
+
+    if len(pareto_options) == 1:
+        ax.scatter(pareto_area, pareto_angle_error, s=180,
+                   facecolors='none', edgecolors='tab:red',
+                   linewidths=2.0, label='Pareto point', zorder=3)
+
+    if annotate:
+        for option in pareto_options:
+            source_index = option.get('source_csl_reciprocal_index')
+            if source_index is None:
+                label = ''
+            else:
+                label = str(np.asarray(source_index, dtype='int64')
+                            .reshape(3,).tolist())
+            ax.annotate(label, (option['area'], option['angle_error_deg']),
+                        textcoords='offset points', xytext=(4, 4),
+                        fontsize=8, zorder=4)
+
+    ax.set_xlabel('2D CSL area')
+    ax.set_ylabel('angle error from 90 deg')
+    if title is not None:
+        ax.set_title(title)
+    ax.legend()
+    return ax
+
+
+def _assign_effective_area(options):
+    min_area = min(option['area'] for option in options)
+    for option in options:
+        _set_effective_area(option, min_area)
+    return min_area
+
+
+def _set_effective_area(option, min_area):
+    option['effective_area'] = _effective_area(
+        option['area'], option['angle_error_deg'], min_area)
+
+
+def _effective_area(area, angle_error_deg, min_area,
+                    angle_reference_deg=45.0):
+    if min_area <= 0:
+        raise ValueError('min_area must be positive.')
+    angle_factor = angle_error_deg/angle_reference_deg
+    return float((1.0 + angle_factor*angle_factor)*(area/min_area))
 
 
 def _basis_metrics(basis_p1, l_p_po):

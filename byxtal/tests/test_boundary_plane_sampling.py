@@ -24,6 +24,32 @@ def test_pareto_filter_keeps_tradeoff_options():
     assert options[2] not in pareto
 
 
+def test_pareto_filter_ignores_aspect_ratio():
+    compact_but_dominated = {
+        'area': 2.0, 'angle_error_deg': 2.0, 'aspect_ratio': 1.0}
+    elongated_but_dominant = {
+        'area': 1.0, 'angle_error_deg': 1.0, 'aspect_ratio': 10.0}
+
+    pareto = bps._pareto_filter([
+        compact_but_dominated,
+        elongated_but_dominant,
+    ])
+
+    assert elongated_but_dominant in pareto
+    assert compact_but_dominated not in pareto
+
+
+def test_effective_area_scales_area_by_angle_error():
+    options = [
+        {'area': 2.0, 'angle_error_deg': 0.0},
+        {'area': 4.0, 'angle_error_deg': 45.0},
+    ]
+    bps._assign_effective_area(options)
+
+    assert options[0]['effective_area'] == 1.0
+    assert options[1]['effective_area'] == 4.0
+
+
 def test_boundary_plane_group_merges_source_candidates():
     def option(area, angle_error, aspect_ratio, score, transform):
         return {
@@ -117,6 +143,8 @@ def test_max_area_normal_generation_sigma651_smoke():
 if __name__ == '__main__':
     test_canonicalize_plane_index_treats_opposites_as_same()
     test_pareto_filter_keeps_tradeoff_options()
+    test_pareto_filter_ignores_aspect_ratio()
+    test_effective_area_scales_area_by_angle_error()
     test_boundary_plane_group_merges_source_candidates()
     test_angular_search_sigma13_smoke()
     test_max_area_normal_generation_sigma651_smoke()
