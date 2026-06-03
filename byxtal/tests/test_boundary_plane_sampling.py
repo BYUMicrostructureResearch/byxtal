@@ -431,9 +431,48 @@ def test_export_boundary_plane_record_completes_full_csl_cell():
     assert basis.shape == (3, 3)
     assert abs(np.linalg.det(basis_po)) > 0
     assert csl_cell['volume'] > 0
+    assert csl_cell['primitive_lattice_volume'] > 0
+    assert csl_cell['primitive_csl_volume'] > 0
+    assert csl_cell['sigma_from_csl_volume'] > 0
+    assert csl_cell['volume_multiplier_over_primitive_csl'] > 0
     assert csl_cell['completion_vector']['search_radius'] == 2
+    assert csl_cell['completion_vector']['selection_strategy'] == (
+        'balanced_orthogonality_volume')
+    assert csl_cell['completion_vector']['strategy_used'] == (
+        'balanced_orthogonality_volume')
     assert csl_cell['completion_vector'][
-        'angle_to_plane_normal_deg'] < 90.0
+        'angle_to_plane_normal_deg'] <= 60.0
+
+
+def test_export_boundary_plane_record_selects_completion_strategy():
+    lat_type = gbl.Lattice()
+    csl_record = cuf.csl_record_from_sig_id('13a', 'common', lat_type)
+    result = bps.search_boundary_plane(
+        csl_record, lat_type, [1, 1, 1], max_area=8.0,
+        angle_radius_deg=25.0, max_transform_index=1,
+        max_area_multiplier=4, n_results=5)
+
+    balanced = bps.export_boundary_plane_record(
+        result['recommended'], csl_record, lat_type,
+        completion_search_radius=4)
+    min_volume = bps.export_boundary_plane_record(
+        result['recommended'], csl_record, lat_type,
+        completion_search_radius=4, completion_strategy='min_volume')
+    close = bps.export_boundary_plane_record(
+        result['recommended'], csl_record, lat_type,
+        completion_search_radius=4, completion_strategy='close_to_orthogonal')
+
+    balanced_completion = balanced['csl_cell_spec']['completion_vector']
+    min_completion = min_volume['csl_cell_spec']['completion_vector']
+    close_completion = close['csl_cell_spec']['completion_vector']
+
+    assert min_completion['selection_strategy'] == 'min_volume'
+    assert close_completion['selection_strategy'] == 'close_to_orthogonal'
+    assert min_completion['volume'] <= balanced_completion['volume'] + 1e-8
+    assert close_completion['angle_to_plane_normal_deg'] <= \
+        balanced_completion['angle_to_plane_normal_deg'] + 1e-8
+    assert min_volume['csl_cell_spec'][
+        'volume_multiplier_over_primitive_csl'] >= 1.0 - 1e-8
 
 
 if __name__ == '__main__':
@@ -456,3 +495,4 @@ if __name__ == '__main__':
     test_target_search_and_area_enumeration_share_plane_fields()
     test_export_boundary_plane_record_has_canonical_shape()
     test_export_boundary_plane_record_completes_full_csl_cell()
+    test_export_boundary_plane_record_selects_completion_strategy()

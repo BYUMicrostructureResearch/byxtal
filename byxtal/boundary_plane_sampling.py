@@ -290,7 +290,11 @@ def sample_boundary_plane_fz(candidate_result, min_spacing_deg=0.0,
 
 def export_boundary_plane_record(plane, csl_record, lat_type,
                                  cell_key='best_by_effective_area',
-                                 completion_search_radius=2, tol=1e-6):
+                                 completion_search_radius=2,
+                                 completion_strategy=(
+                                     'balanced_orthogonality_volume'),
+                                 max_completion_skew_deg=60.0,
+                                 tol=1e-6):
     """
     Export one evaluated boundary plane as a plain Python record.
 
@@ -305,7 +309,10 @@ def export_boundary_plane_record(plane, csl_record, lat_type,
 
     csl_cell_spec = _export_csl_cell_spec(
         plane, csl_record, lat_type, cell_key,
-        completion_search_radius=completion_search_radius, tol=tol)
+        completion_search_radius=completion_search_radius,
+        completion_strategy=completion_strategy,
+        max_completion_skew_deg=max_completion_skew_deg,
+        tol=tol)
 
     return _to_builtin({
         'record_type': 'boundary_plane',
@@ -320,13 +327,18 @@ def export_boundary_plane_record(plane, csl_record, lat_type,
         'orientation_spec': _orientation_spec_from_csl_cell(csl_cell_spec),
         'csl_cell_spec': csl_cell_spec,
         'byxtal_provenance': _export_boundary_plane_provenance(
-            plane, csl_record, cell_key, completion_search_radius),
+            plane, csl_record, cell_key, completion_search_radius,
+            completion_strategy, max_completion_skew_deg),
     })
 
 
 def export_boundary_plane_records(result, csl_record, lat_type,
                                   cell_key='best_by_effective_area',
-                                  completion_search_radius=2, tol=1e-6):
+                                  completion_search_radius=2,
+                                  completion_strategy=(
+                                      'balanced_orthogonality_volume'),
+                                  max_completion_skew_deg=60.0,
+                                  tol=1e-6):
     """
     Export every plane in a byxtal boundary-plane result envelope.
     """
@@ -334,7 +346,10 @@ def export_boundary_plane_records(result, csl_record, lat_type,
     return [
         export_boundary_plane_record(
             plane, csl_record, lat_type, cell_key=cell_key,
-            completion_search_radius=completion_search_radius, tol=tol)
+            completion_search_radius=completion_search_radius,
+            completion_strategy=completion_strategy,
+            max_completion_skew_deg=max_completion_skew_deg,
+            tol=tol)
         for plane in planes
     ]
 
@@ -1377,7 +1392,11 @@ def _export_bp_2d_csl_cell(plane, csl_record, lat_type, cell_key, tol=1e-6):
 
 
 def _export_csl_cell_spec(plane, csl_record, lat_type, cell_key,
-                          completion_search_radius=2, tol=1e-6):
+                          completion_search_radius=2,
+                          completion_strategy=(
+                              'balanced_orthogonality_volume'),
+                          max_completion_skew_deg=60.0,
+                          tol=1e-6):
     option = plane[cell_key]
     basis_2d_g1_primitive = np.asarray(option['basis'], dtype='double')
     basis_2d_g1_primitive, _ = _int_approx_columns(
@@ -1387,6 +1406,8 @@ def _export_csl_cell_spec(plane, csl_record, lat_type, cell_key,
         csl_record['csl_mat'],
         lat_type.l_p_po,
         max_index=completion_search_radius,
+        strategy=completion_strategy,
+        max_skew_deg=max_completion_skew_deg,
         tol=tol)
     basis_g1_primitive = np.column_stack((
         basis_2d_g1_primitive,
@@ -1400,6 +1421,17 @@ def _export_csl_cell_spec(plane, csl_record, lat_type, cell_key,
         _direct_basis_conventional_views(basis_g1_primitive, lat_type, tol)
     conv_g2, conv_dirs_g2, conv_mults_g2 = \
         _direct_basis_conventional_views(basis_g2_primitive, lat_type, tol)
+    volume = float(abs(nla.det(basis_cartesian)))
+    primitive_lattice_volume = float(abs(nla.det(lat_type.l_p_po)))
+    primitive_csl_volume = float(abs(nla.det(
+        np.dot(lat_type.l_p_po, np.asarray(csl_record['csl_mat'],
+                                           dtype='double')))))
+    sigma_from_csl_volume = (
+        None if primitive_lattice_volume < tol
+        else primitive_csl_volume/primitive_lattice_volume)
+    volume_multiplier = (
+        None if primitive_csl_volume < tol
+        else volume/primitive_csl_volume)
 
     return {
         'cell_type': 'periodic_csl',
@@ -1416,7 +1448,11 @@ def _export_csl_cell_spec(plane, csl_record, lat_type, cell_key,
         'two_d_basis_columns': [0, 1],
         'completion_vector_column': 2,
         'area': option['area'],
-        'volume': float(abs(nla.det(basis_cartesian))),
+        'volume': volume,
+        'primitive_lattice_volume': primitive_lattice_volume,
+        'primitive_csl_volume': primitive_csl_volume,
+        'sigma_from_csl_volume': sigma_from_csl_volume,
+        'volume_multiplier_over_primitive_csl': volume_multiplier,
         'lengths': _basis_lengths(basis_cartesian),
         'angles_deg': _cell_angles_deg(basis_cartesian),
         'completion_vector': completion,
@@ -1449,11 +1485,15 @@ def _orientation_spec_from_csl_cell(csl_cell_spec):
 
 
 def _export_boundary_plane_provenance(plane, csl_record, cell_key,
-                                      completion_search_radius):
+                                      completion_search_radius,
+                                      completion_strategy,
+                                      max_completion_skew_deg):
     return {
         'source': 'byxtal.boundary_plane_sampling',
         'source_cell_key': cell_key,
         'completion_search_radius': completion_search_radius,
+        'completion_strategy': completion_strategy,
+        'max_completion_skew_deg': max_completion_skew_deg,
         'csl_reciprocal_index': plane.get('csl_reciprocal_index'),
         'source_count': plane.get('source_count'),
         'source_csl_reciprocal_indices':
@@ -1472,9 +1512,16 @@ def _export_boundary_plane_provenance(plane, csl_record, cell_key,
 
 
 def _best_csl_completion_vector(two_d_basis_g1_primitive, csl_mat, l_p_po,
-                                max_index=2, tol=1e-6):
+                                max_index=2,
+                                strategy='balanced_orthogonality_volume',
+                                max_skew_deg=60.0,
+                                tol=1e-6):
     if max_index < 1:
         raise ValueError('max_index must be at least 1.')
+    strategy = _normalize_completion_strategy(strategy)
+    max_skew_deg = float(max_skew_deg)
+    if max_skew_deg < 0.0 or max_skew_deg > 90.0:
+        raise ValueError('max_skew_deg must be between 0 and 90 degrees.')
 
     two_d_basis_g1_primitive = np.asarray(
         two_d_basis_g1_primitive, dtype='double')
@@ -1486,7 +1533,7 @@ def _best_csl_completion_vector(two_d_basis_g1_primitive, csl_mat, l_p_po,
         raise ValueError('2D CSL basis is degenerate.')
     plane_normal = plane_cross/area
 
-    best = None
+    candidates = []
     search_range = range(-max_index, max_index+1)
     for coeff_tuple in itertools.product(search_range, repeat=3):
         if coeff_tuple == (0, 0, 0):
@@ -1500,40 +1547,130 @@ def _best_csl_completion_vector(two_d_basis_g1_primitive, csl_mat, l_p_po,
         if candidate_length < tol:
             continue
         basis_po = np.column_stack((two_d_basis_po, candidate_po))
-        volume = abs(nla.det(basis_po))
+        signed_volume = nla.det(basis_po)
+        volume = abs(signed_volume)
         if volume < tol:
             continue
+        if signed_volume < 0:
+            coeff = -coeff
+            candidate_g1_primitive = -candidate_g1_primitive
+            candidate_po = -candidate_po
+            signed_volume = -signed_volume
         angle_deg = _unoriented_angle_deg(candidate_po, plane_normal)
-        score = volume + angle_deg*angle_deg
-        key = (
-            score,
-            angle_deg,
-            volume,
-            candidate_length,
-            tuple(np.abs(coeff)),
-            tuple(coeff),
-        )
-        if best is None or key < best[0]:
-            best = (key, coeff, candidate_g1_primitive, candidate_po,
-                    volume, candidate_length, angle_deg, score)
+        candidates.append({
+            'csl_coefficients': coeff,
+            'vector_grain1_primitive': candidate_g1_primitive,
+            'vector_cartesian': candidate_po,
+            'volume': float(signed_volume),
+            'length': float(candidate_length),
+            'angle_to_plane_normal_deg': float(angle_deg),
+        })
 
-    if best is None:
+    if not candidates:
         raise ValueError('Could not find a non-coplanar CSL completion vector.')
 
-    _, coeff, candidate_g1_primitive, candidate_po, volume, length, \
-        angle_deg, score = best
+    strategy_used = strategy
+    fallback_reason = None
+    selection_candidates = candidates
+    if strategy == 'balanced_orthogonality_volume':
+        selection_candidates = [
+            candidate for candidate in candidates
+            if candidate['angle_to_plane_normal_deg'] <=
+            max_skew_deg + tol]
+        if selection_candidates:
+            key_name = 'volume_angle_length_coefficients'
+        else:
+            strategy_used = 'close_to_orthogonal'
+            fallback_reason = (
+                'No completion vector was found within max_skew_deg.')
+            selection_candidates = candidates
+            key_name = 'angle_volume_length_coefficients'
+    elif strategy == 'min_volume':
+        key_name = 'volume_angle_length_coefficients'
+    else:
+        key_name = 'angle_volume_length_coefficients'
+
+    key_func = _completion_selection_key_func(key_name)
+    best = min(selection_candidates, key=key_func)
+    selection_key = key_func(best)
+
     return {
-        'search_algorithm': 'bounded_csl_vector_score',
-        'search_score': float(score),
+        'search_algorithm': 'bounded_csl_vector_search',
+        'selection_strategy': strategy,
+        'strategy_used': strategy_used,
+        'selection_rule': _completion_selection_rule(
+            strategy, max_skew_deg, strategy_used),
+        'selection_key_name': key_name,
+        'selection_key': selection_key,
+        'fallback_reason': fallback_reason,
         'search_radius': int(max_index),
-        'csl_coefficients': coeff,
-        'vector_grain1_primitive': candidate_g1_primitive,
-        'vector_cartesian': candidate_po,
-        'volume': float(volume),
-        'length': float(length),
-        'angle_to_plane_normal_deg': float(angle_deg),
-        'score_definition': 'volume + angle_to_plane_normal_deg^2',
+        'max_skew_deg': max_skew_deg,
+        'candidate_count': len(candidates),
+        'eligible_candidate_count': len(selection_candidates),
+        'csl_coefficients': best['csl_coefficients'],
+        'vector_grain1_primitive': best['vector_grain1_primitive'],
+        'vector_cartesian': best['vector_cartesian'],
+        'volume': best['volume'],
+        'length': best['length'],
+        'angle_to_plane_normal_deg':
+            best['angle_to_plane_normal_deg'],
     }
+
+
+def _normalize_completion_strategy(strategy):
+    strategy = str(strategy).strip().lower().replace('-', '_')
+    aliases = {
+        'balanced': 'balanced_orthogonality_volume',
+        'balanced_orthogonality': 'balanced_orthogonality_volume',
+        'balanced_orthogonality_volume': 'balanced_orthogonality_volume',
+        'default': 'balanced_orthogonality_volume',
+        'orthogonal': 'close_to_orthogonal',
+        'close_to_orthogonal': 'close_to_orthogonal',
+        'min': 'min_volume',
+        'minimum_volume': 'min_volume',
+        'min_volume': 'min_volume',
+    }
+    if strategy not in aliases:
+        raise ValueError('Unknown CSL completion strategy: '+str(strategy))
+    return aliases[strategy]
+
+
+def _completion_selection_key_func(key_name):
+    if key_name == 'volume_angle_length_coefficients':
+        return lambda candidate: (
+            candidate['volume'],
+            candidate['angle_to_plane_normal_deg'],
+            candidate['length'],
+            tuple(np.abs(candidate['csl_coefficients'])),
+            tuple(candidate['csl_coefficients']))
+    if key_name == 'angle_volume_length_coefficients':
+        return lambda candidate: (
+            candidate['angle_to_plane_normal_deg'],
+            candidate['volume'],
+            candidate['length'],
+            tuple(np.abs(candidate['csl_coefficients'])),
+            tuple(candidate['csl_coefficients']))
+    raise ValueError('Unknown completion selection key: '+str(key_name))
+
+
+def _completion_selection_rule(strategy, max_skew_deg, strategy_used):
+    if strategy == 'balanced_orthogonality_volume':
+        if strategy_used == 'balanced_orthogonality_volume':
+            return (
+                'Choose the smallest-volume CSL completion vector with '
+                'angle_to_plane_normal_deg <= max_skew_deg; ties prefer '
+                'smaller angle, shorter length, and smaller coefficients.')
+        return (
+            'Requested balanced_orthogonality_volume, but no vector met '
+            'max_skew_deg; fell back to close_to_orthogonal.')
+    if strategy == 'min_volume':
+        return (
+            'Choose the smallest-volume CSL completion vector; ties prefer '
+            'smaller angle, shorter length, and smaller coefficients.')
+    return (
+        'Choose the CSL completion vector closest to the boundary-plane '
+        'normal; ties prefer smaller volume, shorter length, and smaller '
+        'coefficients.')
 
 
 def _grain2_normal_from_grain1_po(normal_g1_po, sig_mat, lat_type):
