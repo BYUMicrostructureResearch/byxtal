@@ -288,12 +288,36 @@ def sample_boundary_plane_fz(candidate_result, min_spacing_deg=0.0,
     }
 
 
+def calculate_csl_cell(plane, csl_record, lat_type,
+                       cell_key='best_by_effective_area',
+                       completion_search_radius=2,
+                       completion_strategy=(
+                           'balanced_orthogonality_volume'),
+                       max_completion_skew_deg=60.0,
+                       tol=1e-6):
+    """
+    Calculate a full periodic CSL cell for one boundary plane.
+
+    The returned calculation contains the selected 2D CSL basis completed with a
+    third CSL vector according to ``completion_strategy``. It is intended for
+    orientation-cell checks, such as validating that each grain recovers the
+    expected cohesive energy in the periodic CSL cell.
+    """
+    _validate_csl_record(csl_record)
+    if cell_key not in plane:
+        raise ValueError('Plane record is missing cell option: '+cell_key)
+
+    return _calculate_csl_cell(
+        plane, csl_record, lat_type, cell_key,
+        completion_search_radius=completion_search_radius,
+        completion_strategy=completion_strategy,
+        max_completion_skew_deg=max_completion_skew_deg,
+        tol=tol)
+
+
 def export_boundary_plane_record(plane, csl_record, lat_type,
+                                 csl_cell_calculation,
                                  cell_key='best_by_effective_area',
-                                 completion_search_radius=2,
-                                 completion_strategy=(
-                                     'balanced_orthogonality_volume'),
-                                 max_completion_skew_deg=60.0,
                                  tol=1e-6):
     """
     Export one evaluated boundary plane as a plain Python record.
@@ -307,12 +331,7 @@ def export_boundary_plane_record(plane, csl_record, lat_type,
     if cell_key not in plane:
         raise ValueError('Plane record is missing cell option: '+cell_key)
 
-    csl_cell_spec = _export_csl_cell_spec(
-        plane, csl_record, lat_type, cell_key,
-        completion_search_radius=completion_search_radius,
-        completion_strategy=completion_strategy,
-        max_completion_skew_deg=max_completion_skew_deg,
-        tol=tol)
+    csl_cell_spec = _to_builtin(csl_cell_calculation)
 
     return _to_builtin({
         'record_type': 'boundary_plane',
@@ -327,30 +346,28 @@ def export_boundary_plane_record(plane, csl_record, lat_type,
         'orientation_spec': _orientation_spec_from_csl_cell(csl_cell_spec),
         'csl_cell_spec': csl_cell_spec,
         'byxtal_provenance': _export_boundary_plane_provenance(
-            plane, csl_record, cell_key, completion_search_radius,
-            completion_strategy, max_completion_skew_deg),
+            plane, csl_record, cell_key, csl_cell_calculation),
     })
 
 
 def export_boundary_plane_records(result, csl_record, lat_type,
+                                  csl_cell_calculations,
                                   cell_key='best_by_effective_area',
-                                  completion_search_radius=2,
-                                  completion_strategy=(
-                                      'balanced_orthogonality_volume'),
-                                  max_completion_skew_deg=60.0,
                                   tol=1e-6):
     """
     Export every plane in a byxtal boundary-plane result envelope.
     """
     planes = _planes_from_result(result)
+    csl_cell_calculations = list(csl_cell_calculations)
+    if len(planes) != len(csl_cell_calculations):
+        raise ValueError(
+            'Number of planes and csl_cell_calculations must match.')
     return [
         export_boundary_plane_record(
-            plane, csl_record, lat_type, cell_key=cell_key,
-            completion_search_radius=completion_search_radius,
-            completion_strategy=completion_strategy,
-            max_completion_skew_deg=max_completion_skew_deg,
-            tol=tol)
-        for plane in planes
+            plane, csl_record, lat_type, csl_cell_calculation,
+            cell_key=cell_key, tol=tol)
+        for plane, csl_cell_calculation
+        in zip(planes, csl_cell_calculations)
     ]
 
 
@@ -1391,12 +1408,12 @@ def _export_bp_2d_csl_cell(plane, csl_record, lat_type, cell_key, tol=1e-6):
     }
 
 
-def _export_csl_cell_spec(plane, csl_record, lat_type, cell_key,
-                          completion_search_radius=2,
-                          completion_strategy=(
-                              'balanced_orthogonality_volume'),
-                          max_completion_skew_deg=60.0,
-                          tol=1e-6):
+def _calculate_csl_cell(plane, csl_record, lat_type, cell_key,
+                        completion_search_radius=2,
+                        completion_strategy=(
+                            'balanced_orthogonality_volume'),
+                        max_completion_skew_deg=60.0,
+                        tol=1e-6):
     option = plane[cell_key]
     basis_2d_g1_primitive = np.asarray(option['basis'], dtype='double')
     basis_2d_g1_primitive, _ = _int_approx_columns(
@@ -1485,15 +1502,15 @@ def _orientation_spec_from_csl_cell(csl_cell_spec):
 
 
 def _export_boundary_plane_provenance(plane, csl_record, cell_key,
-                                      completion_search_radius,
-                                      completion_strategy,
-                                      max_completion_skew_deg):
+                                      csl_cell_calculation):
+    completion = csl_cell_calculation.get('completion_vector', {})
     return {
         'source': 'byxtal.boundary_plane_sampling',
         'source_cell_key': cell_key,
-        'completion_search_radius': completion_search_radius,
-        'completion_strategy': completion_strategy,
-        'max_completion_skew_deg': max_completion_skew_deg,
+        'completion_search_radius': completion.get('search_radius'),
+        'completion_strategy': completion.get('selection_strategy'),
+        'completion_strategy_used': completion.get('strategy_used'),
+        'max_completion_skew_deg': completion.get('max_skew_deg'),
         'csl_reciprocal_index': plane.get('csl_reciprocal_index'),
         'source_count': plane.get('source_count'),
         'source_csl_reciprocal_indices':
