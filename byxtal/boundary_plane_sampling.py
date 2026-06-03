@@ -288,6 +288,57 @@ def sample_boundary_plane_fz(candidate_result, min_spacing_deg=0.0,
     }
 
 
+def export_boundary_plane_record(plane, csl_record, lat_type,
+                                 cell_key='best_by_effective_area',
+                                 completion_search_radius=2, tol=1e-6):
+    """
+    Export one evaluated boundary plane as a plain Python record.
+
+    The exported record is intended as a stable interchange shape for
+    atomistic workflows. Numerical work remains NumPy-based inside byxtal,
+    but the returned record contains only built-in Python containers and
+    scalar types so it can be stored in JSON-like metadata or ASE DB row data.
+    """
+    _validate_csl_record(csl_record)
+    if cell_key not in plane:
+        raise ValueError('Plane record is missing cell option: '+cell_key)
+
+    csl_cell_spec = _export_csl_cell_spec(
+        plane, csl_record, lat_type, cell_key,
+        completion_search_radius=completion_search_radius, tol=tol)
+
+    return _to_builtin({
+        'record_type': 'boundary_plane',
+        'sig_id': plane.get('sig_id', csl_record.get('sig_id')),
+        'csl_rotation_id': plane.get(
+            'csl_rotation_id', csl_record.get('csl_rotation_id')),
+        'lattice_type': getattr(lat_type, 'elem_type', None),
+        'plane_normals': _export_plane_normals(
+            plane, csl_record, lat_type, tol=tol),
+        'bp_2d_csl_cell': _export_bp_2d_csl_cell(
+            plane, csl_record, lat_type, cell_key, tol=tol),
+        'orientation_spec': _orientation_spec_from_csl_cell(csl_cell_spec),
+        'csl_cell_spec': csl_cell_spec,
+        'byxtal_provenance': _export_boundary_plane_provenance(
+            plane, csl_record, cell_key, completion_search_radius),
+    })
+
+
+def export_boundary_plane_records(result, csl_record, lat_type,
+                                  cell_key='best_by_effective_area',
+                                  completion_search_radius=2, tol=1e-6):
+    """
+    Export every plane in a byxtal boundary-plane result envelope.
+    """
+    planes = _planes_from_result(result)
+    return [
+        export_boundary_plane_record(
+            plane, csl_record, lat_type, cell_key=cell_key,
+            completion_search_radius=completion_search_radius, tol=tol)
+        for plane in planes
+    ]
+
+
 def _validate_csl_record(csl_record):
     for key in ('csl_mat', 'sig_mat'):
         if key not in csl_record:
@@ -1270,6 +1321,302 @@ def _selected_cell_option(plane, cell_key):
     except KeyError as exc:
         raise ValueError('Plane record is missing cell option: '+cell_key) \
             from exc
+
+
+def _export_plane_normals(plane, csl_record, lat_type, tol=1e-6):
+    normal_g1_po = _unit(plane['normal_po'])
+    normal_g2_po = _grain2_normal_from_grain1_po(
+        normal_g1_po, csl_record['sig_mat'], lat_type)
+
+    bp_fz_g1_po = _unit(plane['normal_fz_po'])
+    bp_fz_g2_po = _grain2_normal_from_grain1_po(
+        bp_fz_g1_po, csl_record['sig_mat'], lat_type)
+
+    return {
+        'grain1_miller': plane['grain1_miller_conventional'],
+        'grain2_miller': _convert_normal_to_conventional_miller(
+            normal_g2_po, lat_type, tol=tol),
+        'bp_fz_miller_grain1': _convert_normal_to_conventional_miller(
+            bp_fz_g1_po, lat_type, tol=tol),
+        'bp_fz_miller_grain2': _convert_normal_to_conventional_miller(
+            bp_fz_g2_po, lat_type, tol=tol),
+        'bp_fz_normal_grain1_po': bp_fz_g1_po,
+        'bp_fz_normal_grain2_po': bp_fz_g2_po,
+        'bp_fz_stereographic_grain1': plane.get('normal_fz_stereo'),
+        'basis_convention': 'column_vectors',
+    }
+
+
+def _export_bp_2d_csl_cell(plane, csl_record, lat_type, cell_key, tol=1e-6):
+    option = plane[cell_key]
+    basis_g1_primitive = np.asarray(option['basis'], dtype='double')
+    basis_g1_primitive, _ = _int_approx_columns(basis_g1_primitive, tol)
+    basis_g2_primitive = _grain2_direct_from_grain1_p1(
+        basis_g1_primitive, csl_record['sig_mat'], tol=tol)
+    conv_g1, conv_dirs_g1, conv_mults_g1 = \
+        _direct_basis_conventional_views(basis_g1_primitive, lat_type, tol)
+    conv_g2, conv_dirs_g2, conv_mults_g2 = \
+        _direct_basis_conventional_views(basis_g2_primitive, lat_type, tol)
+
+    return {
+        'basis_convention': 'column_vectors',
+        'basis_grain1_primitive': basis_g1_primitive,
+        'basis_grain2_primitive': basis_g2_primitive,
+        'basis_grain1_conventional': conv_g1,
+        'basis_grain2_conventional': conv_g2,
+        'basis_grain1_conventional_directions': conv_dirs_g1,
+        'basis_grain2_conventional_directions': conv_dirs_g2,
+        'basis_grain1_conventional_direction_multipliers': conv_mults_g1,
+        'basis_grain2_conventional_direction_multipliers': conv_mults_g2,
+        'basis_cartesian': np.dot(lat_type.l_p_po, basis_g1_primitive),
+        'area': option['area'],
+        'lengths': option['lengths'],
+        'angle_deg': option['angle_deg'],
+        'aspect_ratio': option['aspect_ratio'],
+    }
+
+
+def _export_csl_cell_spec(plane, csl_record, lat_type, cell_key,
+                          completion_search_radius=2, tol=1e-6):
+    option = plane[cell_key]
+    basis_2d_g1_primitive = np.asarray(option['basis'], dtype='double')
+    basis_2d_g1_primitive, _ = _int_approx_columns(
+        basis_2d_g1_primitive, tol)
+    completion = _best_csl_completion_vector(
+        basis_2d_g1_primitive,
+        csl_record['csl_mat'],
+        lat_type.l_p_po,
+        max_index=completion_search_radius,
+        tol=tol)
+    basis_g1_primitive = np.column_stack((
+        basis_2d_g1_primitive,
+        completion['vector_grain1_primitive']))
+    basis_g1_primitive, _ = _int_approx_columns(basis_g1_primitive, tol)
+    basis_g2_primitive = _grain2_direct_from_grain1_p1(
+        basis_g1_primitive, csl_record['sig_mat'], tol=tol)
+    basis_cartesian = np.dot(lat_type.l_p_po, basis_g1_primitive)
+
+    conv_g1, conv_dirs_g1, conv_mults_g1 = \
+        _direct_basis_conventional_views(basis_g1_primitive, lat_type, tol)
+    conv_g2, conv_dirs_g2, conv_mults_g2 = \
+        _direct_basis_conventional_views(basis_g2_primitive, lat_type, tol)
+
+    return {
+        'cell_type': 'periodic_csl',
+        'basis_convention': 'column_vectors',
+        'basis_grain1_primitive': basis_g1_primitive,
+        'basis_grain2_primitive': basis_g2_primitive,
+        'basis_grain1_conventional': conv_g1,
+        'basis_grain2_conventional': conv_g2,
+        'basis_grain1_conventional_directions': conv_dirs_g1,
+        'basis_grain2_conventional_directions': conv_dirs_g2,
+        'basis_grain1_conventional_direction_multipliers': conv_mults_g1,
+        'basis_grain2_conventional_direction_multipliers': conv_mults_g2,
+        'basis_cartesian': basis_cartesian,
+        'two_d_basis_columns': [0, 1],
+        'completion_vector_column': 2,
+        'area': option['area'],
+        'volume': float(abs(nla.det(basis_cartesian))),
+        'lengths': _basis_lengths(basis_cartesian),
+        'angles_deg': _cell_angles_deg(basis_cartesian),
+        'completion_vector': completion,
+    }
+
+
+def _orientation_spec_from_csl_cell(csl_cell_spec):
+    return {
+        'basis_convention': csl_cell_spec['basis_convention'],
+        'coordinate_frame': 'crystal_direction_indices',
+        'grain1': {
+            'primitive_directions':
+                csl_cell_spec['basis_grain1_primitive'],
+            'conventional_directions':
+                csl_cell_spec['basis_grain1_conventional_directions'],
+            'conventional_direction_multipliers':
+                csl_cell_spec[
+                    'basis_grain1_conventional_direction_multipliers'],
+        },
+        'grain2': {
+            'primitive_directions':
+                csl_cell_spec['basis_grain2_primitive'],
+            'conventional_directions':
+                csl_cell_spec['basis_grain2_conventional_directions'],
+            'conventional_direction_multipliers':
+                csl_cell_spec[
+                    'basis_grain2_conventional_direction_multipliers'],
+        },
+    }
+
+
+def _export_boundary_plane_provenance(plane, csl_record, cell_key,
+                                      completion_search_radius):
+    return {
+        'source': 'byxtal.boundary_plane_sampling',
+        'source_cell_key': cell_key,
+        'completion_search_radius': completion_search_radius,
+        'csl_reciprocal_index': plane.get('csl_reciprocal_index'),
+        'source_count': plane.get('source_count'),
+        'source_csl_reciprocal_indices':
+            plane.get('source_csl_reciprocal_indices', []),
+        'source_grain1_miller_conventionals':
+            plane.get('source_grain1_miller_conventionals', []),
+        'target_angle_error_deg': plane.get('target_angle_error_deg'),
+        'fz_group_key': plane.get('fz_group_key'),
+        'sig_mat': csl_record.get('sig_mat'),
+        'csl_mat': csl_record.get('csl_mat'),
+        'dsc_mat': csl_record.get('dsc_mat'),
+        'dis_quat': csl_record.get('dis_quat'),
+        'dis_axis_angle': csl_record.get('dis_axis_angle'),
+        'csl_bp_props': csl_record.get('csl_bp_props'),
+    }
+
+
+def _best_csl_completion_vector(two_d_basis_g1_primitive, csl_mat, l_p_po,
+                                max_index=2, tol=1e-6):
+    if max_index < 1:
+        raise ValueError('max_index must be at least 1.')
+
+    two_d_basis_g1_primitive = np.asarray(
+        two_d_basis_g1_primitive, dtype='double')
+    csl_mat = np.asarray(csl_mat, dtype='double')
+    two_d_basis_po = np.dot(l_p_po, two_d_basis_g1_primitive)
+    plane_cross = np.cross(two_d_basis_po[:, 0], two_d_basis_po[:, 1])
+    area = nla.norm(plane_cross)
+    if area < tol:
+        raise ValueError('2D CSL basis is degenerate.')
+    plane_normal = plane_cross/area
+
+    best = None
+    search_range = range(-max_index, max_index+1)
+    for coeff_tuple in itertools.product(search_range, repeat=3):
+        if coeff_tuple == (0, 0, 0):
+            continue
+        coeff = np.asarray(coeff_tuple, dtype='int64')
+        candidate_g1_primitive = np.dot(csl_mat, coeff)
+        candidate_g1_primitive, _ = int_man.int_approx(
+            candidate_g1_primitive, tol)
+        candidate_po = np.dot(l_p_po, candidate_g1_primitive)
+        candidate_length = nla.norm(candidate_po)
+        if candidate_length < tol:
+            continue
+        basis_po = np.column_stack((two_d_basis_po, candidate_po))
+        volume = abs(nla.det(basis_po))
+        if volume < tol:
+            continue
+        angle_deg = _unoriented_angle_deg(candidate_po, plane_normal)
+        score = volume + angle_deg*angle_deg
+        key = (
+            score,
+            angle_deg,
+            volume,
+            candidate_length,
+            tuple(np.abs(coeff)),
+            tuple(coeff),
+        )
+        if best is None or key < best[0]:
+            best = (key, coeff, candidate_g1_primitive, candidate_po,
+                    volume, candidate_length, angle_deg, score)
+
+    if best is None:
+        raise ValueError('Could not find a non-coplanar CSL completion vector.')
+
+    _, coeff, candidate_g1_primitive, candidate_po, volume, length, \
+        angle_deg, score = best
+    return {
+        'search_algorithm': 'bounded_csl_vector_score',
+        'search_score': float(score),
+        'search_radius': int(max_index),
+        'csl_coefficients': coeff,
+        'vector_grain1_primitive': candidate_g1_primitive,
+        'vector_cartesian': candidate_po,
+        'volume': float(volume),
+        'length': float(length),
+        'angle_to_plane_normal_deg': float(angle_deg),
+        'score_definition': 'volume + angle_to_plane_normal_deg^2',
+    }
+
+
+def _grain2_normal_from_grain1_po(normal_g1_po, sig_mat, lat_type):
+    l_po2_po1 = _orthogonal_rotation_from_primitive(sig_mat, lat_type)
+    l_po1_po2 = nla.inv(l_po2_po1)
+    return _unit(-np.dot(l_po1_po2, normal_g1_po))
+
+
+def _grain2_direct_from_grain1_p1(basis_g1_p1, sig_mat, tol=1e-6):
+    basis_g2_p2 = np.dot(nla.inv(sig_mat), basis_g1_p1)
+    basis_g2_p2, _ = _int_approx_columns(basis_g2_p2, tol)
+    return basis_g2_p2
+
+
+def _orthogonal_rotation_from_primitive(sig_mat, lat_type):
+    l_p_po = lat_type.l_p_po
+    l_po_p = nla.inv(l_p_po)
+    return np.dot(l_p_po, np.dot(sig_mat, l_po_p))
+
+
+def _direct_basis_conventional_views(basis_p, lat_type, tol):
+    conv_coords = _direct_basis_to_conventional_coords(basis_p, lat_type)
+    conv_dirs, multipliers = _int_approx_columns(conv_coords, tol)
+    return conv_coords, conv_dirs, multipliers
+
+
+def _direct_basis_to_conventional_coords(basis_p, lat_type):
+    basis_po = np.dot(lat_type.l_p_po, basis_p)
+    return np.dot(nla.inv(_conventional_basis_po(lat_type)), basis_po)
+
+
+def _int_approx_columns(mat, tol):
+    """
+    Apply byxtal's integer approximation helper to each matrix column.
+    """
+    mat = np.asarray(mat, dtype='double')
+    out = np.zeros(mat.shape, dtype='int64')
+    multipliers = []
+    for idx in range(mat.shape[1]):
+        out[:, idx], multiplier = int_man.int_approx(mat[:, idx], tol)
+        multipliers.append(float(multiplier))
+    return out, np.asarray(multipliers, dtype='double')
+
+
+def _basis_lengths(basis_po):
+    return np.array([
+        nla.norm(basis_po[:, idx]) for idx in range(basis_po.shape[1])
+    ], dtype='double')
+
+
+def _cell_angles_deg(basis_po):
+    a_vec = basis_po[:, 0]
+    b_vec = basis_po[:, 1]
+    c_vec = basis_po[:, 2]
+    return {
+        'alpha': _vector_angle_deg(b_vec, c_vec),
+        'beta': _vector_angle_deg(a_vec, c_vec),
+        'gamma': _vector_angle_deg(a_vec, b_vec),
+    }
+
+
+def _vector_angle_deg(vec1, vec2):
+    len1 = nla.norm(vec1)
+    len2 = nla.norm(vec2)
+    if len1 == 0 or len2 == 0:
+        raise ValueError('Cannot compute an angle with a zero vector.')
+    cos_ang = np.dot(vec1, vec2)/(len1*len2)
+    cos_ang = np.clip(cos_ang, -1.0, 1.0)
+    return float(np.degrees(np.arccos(cos_ang)))
+
+
+def _to_builtin(value):
+    if isinstance(value, np.ndarray):
+        return [_to_builtin(item) for item in value.tolist()]
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, tuple):
+        return [_to_builtin(item) for item in value]
+    if isinstance(value, list):
+        return [_to_builtin(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _to_builtin(val) for key, val in value.items()}
+    return value
 
 
 def _plane_stereo_point(plane):

@@ -385,6 +385,57 @@ def test_target_search_and_area_enumeration_share_plane_fields():
         assert field in area_fields
 
 
+def test_export_boundary_plane_record_has_canonical_shape():
+    lat_type = gbl.Lattice()
+    csl_record = cuf.csl_record_from_sig_id('13a', 'common', lat_type)
+    result = bps.search_boundary_plane(
+        csl_record, lat_type, [1, 1, 1], max_area=8.0,
+        angle_radius_deg=25.0, max_transform_index=1,
+        max_area_multiplier=4, n_results=5)
+
+    record = bps.export_boundary_plane_record(
+        result['recommended'], csl_record, lat_type)
+
+    assert record['record_type'] == 'boundary_plane'
+    assert record['sig_id'] == '13a'
+    assert 'plane_normals' in record
+    assert 'bp_2d_csl_cell' in record
+    assert 'selected_2d_cell' not in record
+    assert 'quality_metrics' not in record
+    assert 'orientation_spec' in record
+    assert 'csl_cell_spec' in record
+    assert record['bp_2d_csl_cell']['basis_convention'] == 'column_vectors'
+    assert record['csl_cell_spec']['cell_type'] == 'periodic_csl'
+    assert record['csl_cell_spec']['completion_vector_column'] == 2
+    assert len(record['plane_normals']['grain1_miller']) == 3
+    assert len(record['plane_normals']['grain2_miller']) == 3
+    assert len(record['plane_normals']['bp_fz_stereographic_grain1']) == 3
+
+
+def test_export_boundary_plane_record_completes_full_csl_cell():
+    lat_type = gbl.Lattice()
+    csl_record = cuf.csl_record_from_sig_id('13a', 'common', lat_type)
+    result = bps.search_boundary_plane(
+        csl_record, lat_type, [1, 1, 1], max_area=8.0,
+        angle_radius_deg=25.0, max_transform_index=1,
+        max_area_multiplier=4, n_results=5)
+
+    record = bps.export_boundary_plane_record(
+        result['recommended'], csl_record, lat_type,
+        completion_search_radius=2)
+    csl_cell = record['csl_cell_spec']
+
+    basis = np.array(csl_cell['basis_grain1_primitive'], dtype='double')
+    basis_po = np.dot(lat_type.l_p_po, basis)
+
+    assert basis.shape == (3, 3)
+    assert abs(np.linalg.det(basis_po)) > 0
+    assert csl_cell['volume'] > 0
+    assert csl_cell['completion_vector']['search_radius'] == 2
+    assert csl_cell['completion_vector'][
+        'angle_to_plane_normal_deg'] < 90.0
+
+
 if __name__ == '__main__':
     test_canonicalize_plane_index_treats_opposites_as_same()
     test_pareto_filter_keeps_tradeoff_options()
@@ -403,3 +454,5 @@ if __name__ == '__main__':
     test_max_area_enumeration_sigma13_smoke()
     test_fz_quality_spacing_sigma13_smoke()
     test_target_search_and_area_enumeration_share_plane_fields()
+    test_export_boundary_plane_record_has_canonical_shape()
+    test_export_boundary_plane_record_completes_full_csl_cell()
