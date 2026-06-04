@@ -1382,7 +1382,10 @@ def _export_plane_normals(plane, csl_record, lat_type, tol=1e-6):
 def _export_bp_2d_csl_cell(plane, csl_record, lat_type, cell_key, tol=1e-6):
     option = plane[cell_key]
     basis_g1_primitive = np.asarray(option['basis'], dtype='double')
-    basis_g1_primitive, _ = _int_approx_columns(basis_g1_primitive, tol)
+    basis_g1_primitive, _ = int_man.int_finder(
+        basis_g1_primitive, rational_tolerance=tol, order='columns',
+        zero_tolerance=tol, return_multipliers=True)
+    basis_g1_primitive = np.asarray(basis_g1_primitive, dtype='int64')
     basis_g2_primitive = _grain2_direct_from_grain1_p1(
         basis_g1_primitive, csl_record['sig_mat'], tol=tol)
     conv_g1, conv_dirs_g1, conv_mults_g1 = \
@@ -1416,8 +1419,11 @@ def _calculate_csl_cell(plane, csl_record, lat_type, cell_key,
                         tol=1e-6):
     option = plane[cell_key]
     basis_2d_g1_primitive = np.asarray(option['basis'], dtype='double')
-    basis_2d_g1_primitive, _ = _int_approx_columns(
-        basis_2d_g1_primitive, tol)
+    basis_2d_g1_primitive, _ = int_man.int_finder(
+        basis_2d_g1_primitive, rational_tolerance=tol, order='columns',
+        zero_tolerance=tol, return_multipliers=True)
+    basis_2d_g1_primitive = np.asarray(
+        basis_2d_g1_primitive, dtype='int64')
     completion = _best_csl_completion_vector(
         basis_2d_g1_primitive,
         csl_record['csl_mat'],
@@ -1429,7 +1435,10 @@ def _calculate_csl_cell(plane, csl_record, lat_type, cell_key,
     basis_g1_primitive = np.column_stack((
         basis_2d_g1_primitive,
         completion['vector_grain1_primitive']))
-    basis_g1_primitive, _ = _int_approx_columns(basis_g1_primitive, tol)
+    basis_g1_primitive, _ = int_man.int_finder(
+        basis_g1_primitive, rational_tolerance=tol, order='columns',
+        zero_tolerance=tol, return_multipliers=True)
+    basis_g1_primitive = np.asarray(basis_g1_primitive, dtype='int64')
     basis_g2_primitive = _grain2_direct_from_grain1_p1(
         basis_g1_primitive, csl_record['sig_mat'], tol=tol)
     basis_cartesian = np.dot(lat_type.l_p_po, basis_g1_primitive)
@@ -1698,8 +1707,10 @@ def _grain2_normal_from_grain1_po(normal_g1_po, sig_mat, lat_type):
 
 def _grain2_direct_from_grain1_p1(basis_g1_p1, sig_mat, tol=1e-6):
     basis_g2_p2 = np.dot(nla.inv(sig_mat), basis_g1_p1)
-    basis_g2_p2, _ = _int_approx_columns(basis_g2_p2, tol)
-    return basis_g2_p2
+    basis_g2_p2, _ = int_man.int_finder(
+        basis_g2_p2, rational_tolerance=tol, order='columns',
+        zero_tolerance=tol, return_multipliers=True)
+    return np.asarray(basis_g2_p2, dtype='int64')
 
 
 def _orthogonal_rotation_from_primitive(sig_mat, lat_type):
@@ -1710,26 +1721,18 @@ def _orthogonal_rotation_from_primitive(sig_mat, lat_type):
 
 def _direct_basis_conventional_views(basis_p, lat_type, tol):
     conv_coords = _direct_basis_to_conventional_coords(basis_p, lat_type)
-    conv_dirs, multipliers = _int_approx_columns(conv_coords, tol)
-    return conv_coords, conv_dirs, multipliers
+    conv_dirs, multipliers = int_man.int_finder(
+        conv_coords, rational_tolerance=tol, order='columns',
+        zero_tolerance=tol, return_multipliers=True)
+    return (
+        conv_coords,
+        np.asarray(conv_dirs, dtype='int64'),
+        np.asarray(multipliers, dtype='double'))
 
 
 def _direct_basis_to_conventional_coords(basis_p, lat_type):
     basis_po = np.dot(lat_type.l_p_po, basis_p)
     return np.dot(nla.inv(_conventional_basis_po(lat_type)), basis_po)
-
-
-def _int_approx_columns(mat, tol):
-    """
-    Apply byxtal's integer approximation helper to each matrix column.
-    """
-    mat = np.asarray(mat, dtype='double')
-    out = np.zeros(mat.shape, dtype='int64')
-    multipliers = []
-    for idx in range(mat.shape[1]):
-        out[:, idx], multiplier = int_man.int_approx(mat[:, idx], tol)
-        multipliers.append(float(multiplier))
-    return out, np.asarray(multipliers, dtype='double')
 
 
 def _basis_lengths(basis_po):
