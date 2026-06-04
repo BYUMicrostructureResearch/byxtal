@@ -393,8 +393,10 @@ def test_export_boundary_plane_record_has_canonical_shape():
         angle_radius_deg=25.0, max_transform_index=1,
         max_area_multiplier=4, n_results=5)
 
-    record = bps.export_boundary_plane_record(
+    csl_cell = bps.calculate_csl_cell(
         result['recommended'], csl_record, lat_type)
+    record = bps.export_boundary_plane_record(
+        result['recommended'], csl_record, lat_type, csl_cell)
 
     assert record['record_type'] == 'boundary_plane'
     assert record['sig_id'] == '13a'
@@ -420,9 +422,11 @@ def test_export_boundary_plane_record_completes_full_csl_cell():
         angle_radius_deg=25.0, max_transform_index=1,
         max_area_multiplier=4, n_results=5)
 
-    record = bps.export_boundary_plane_record(
+    csl_cell = bps.calculate_csl_cell(
         result['recommended'], csl_record, lat_type,
         completion_search_radius=2)
+    record = bps.export_boundary_plane_record(
+        result['recommended'], csl_record, lat_type, csl_cell)
     csl_cell = record['csl_cell_spec']
 
     basis = np.array(csl_cell['basis_grain1_primitive'], dtype='double')
@@ -452,26 +456,26 @@ def test_export_boundary_plane_record_selects_completion_strategy():
         angle_radius_deg=25.0, max_transform_index=1,
         max_area_multiplier=4, n_results=5)
 
-    balanced = bps.export_boundary_plane_record(
+    balanced = bps.calculate_csl_cell(
         result['recommended'], csl_record, lat_type,
         completion_search_radius=4)
-    min_volume = bps.export_boundary_plane_record(
+    min_volume = bps.calculate_csl_cell(
         result['recommended'], csl_record, lat_type,
         completion_search_radius=4, completion_strategy='min_volume')
-    close = bps.export_boundary_plane_record(
+    close = bps.calculate_csl_cell(
         result['recommended'], csl_record, lat_type,
         completion_search_radius=4, completion_strategy='close_to_orthogonal')
 
-    balanced_completion = balanced['csl_cell_spec']['completion_vector']
-    min_completion = min_volume['csl_cell_spec']['completion_vector']
-    close_completion = close['csl_cell_spec']['completion_vector']
+    balanced_completion = balanced['completion_vector']
+    min_completion = min_volume['completion_vector']
+    close_completion = close['completion_vector']
 
     assert min_completion['selection_strategy'] == 'min_volume'
     assert close_completion['selection_strategy'] == 'close_to_orthogonal'
     assert min_completion['volume'] <= balanced_completion['volume'] + 1e-8
     assert close_completion['angle_to_plane_normal_deg'] <= \
         balanced_completion['angle_to_plane_normal_deg'] + 1e-8
-    assert min_volume['csl_cell_spec'][
+    assert min_volume[
         'volume_multiplier_over_primitive_csl'] >= 1.0 - 1e-8
 
 
