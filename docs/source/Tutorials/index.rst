@@ -11,3 +11,4 @@ Tutorials
     enumerate_byxtal_fcc
     enumerate_byxtal_hcp
     Basis_2D_Plane
+    Boundary_Plane_Sampling
