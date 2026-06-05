@@ -253,6 +253,56 @@ def normalize(vec):
     n = np.tile(norm(vec), (3, 1))
     return vec/n
 
+
+def stereographic_projection(vec, tol=1e-12):
+    """
+    Calculate stereographic projection coordinates for 3-by-N vectors.
+
+    This uses the byxtal column-vector convention where each vector is a
+    column of a 3-by-N array. Input vectors are normalized before projection,
+    then projected using ``[x/(z + 1), y/(z + 1)]``. This helper is intended
+    for the upper-hemisphere convention used by byxtal boundary-plane FZ plots.
+
+    Parameters
+    ----------------
+    vec: numpy.array
+        Input vector or array of vectors. A one-dimensional length-3 vector is
+        treated as one 3-by-1 column vector.
+    tol: float
+        Tolerance for detecting zero-length vectors and the projection
+        singularity at ``z = -1``, Default = 1e-12.
+
+    Returns
+    ------------
+    xy: numpy.array
+        Stereographic projection coordinates in 2-by-N column-vector form.
+    """
+    arr = np.asarray(vec, dtype='double')
+    if arr.ndim == 1:
+        if arr.size != 3:
+            raise ValueError('Input vector must have 3 components.')
+        arr = arr.reshape((3, 1))
+    elif arr.ndim != 2 or arr.shape[0] != 3:
+        raise ValueError('Input vectors must have shape 3-by-N.')
+
+    norms = np.linalg.norm(arr, axis=0, keepdims=True)
+    if np.any(norms <= tol):
+        raise ValueError('Cannot project zero-length vectors.')
+    unit = arr/norms
+
+    if np.any(unit[2, :] < -tol):
+        raise NotImplementedError(
+            'Stereographic projection is only implemented for upper-'
+            'hemisphere vectors with z >= 0. Lower-hemisphere vectors need '
+            'an explicit two-projection convention.')
+
+    denominator = unit[2, :] + 1.0
+    if np.any(np.abs(denominator) <= tol):
+        raise ValueError(
+            'Stereographic projection is singular for vectors with z = -1.')
+
+    return unit[:2, :]/denominator
+
 # def angle_outer
 # def char(v,*args):
 # def check_option():

@@ -18,6 +18,7 @@ from . import find_csl_dsc as fcd
 from . import integer_manipulations as int_man
 from . import pick_fz_bpl as pfb
 from . import reduce_po_lat as rpl
+from . import vector3d as vec3d
 
 
 def search_boundary_plane(csl_record, lat_type, target_miller, max_area,
@@ -532,7 +533,8 @@ def _compute_2d_csl_metrics(csl_index, csl_mat, lat_type,
         'grain1_miller_primitive': grain1_miller,
         'normal_po': normal_po,
         'normal_fz_po': None,
-        'normal_fz_stereo': None,
+        'normal_fz_sg': None,
+        'normal_fz_stereographic_xy': None,
         'target_angle_error_deg': target_angle_error,
         'primitive_basis': primitive_basis_p1,
         'primitive_metrics': primitive_metrics,
@@ -617,7 +619,9 @@ def _canonicalize_by_bp_symmetry(candidates, csl_bp_props=None, decimals=10):
         for candidate in candidates:
             normal_po = _unit(candidate['normal_po'])
             candidate['normal_fz_po'] = normal_po
-            candidate['normal_fz_stereo'] = normal_po
+            candidate['normal_fz_sg'] = normal_po
+            candidate['normal_fz_stereographic_xy'] = \
+                vec3d.stereographic_projection(normal_po).reshape(2,)
             key = _direction_key(normal_po, decimals)
             candidate['fz_group_key'] = key
             groups.setdefault(key, []).append(candidate)
@@ -631,12 +635,14 @@ def _canonicalize_by_bp_symmetry(candidates, csl_bp_props=None, decimals=10):
         csl_bp_props['symm_grp_ax'])
 
     groups = {}
-    for candidate, fz_normal, fz_stereo_vec in zip(
+    for candidate, fz_normal, fz_sg_normal in zip(
             candidates, fz_norms, fz_stereo):
         fz_normal = _unit(fz_normal)
+        fz_sg_normal = np.asarray(fz_sg_normal, dtype='double')
         candidate['normal_fz_po'] = fz_normal
-        candidate['normal_fz_stereo'] = np.asarray(
-            fz_stereo_vec, dtype='double')
+        candidate['normal_fz_sg'] = fz_sg_normal
+        candidate['normal_fz_stereographic_xy'] = \
+            vec3d.stereographic_projection(fz_sg_normal).reshape(2,)
         key = _direction_key(fz_normal, decimals)
         candidate['fz_group_key'] = key
         groups.setdefault(key, []).append(candidate)
@@ -649,7 +655,9 @@ def _identity_boundary_plane_groups(candidates, decimals=10):
     for candidate in candidates:
         normal_po = _unit(candidate['normal_po'])
         candidate['normal_fz_po'] = normal_po
-        candidate['normal_fz_stereo'] = normal_po
+        candidate['normal_fz_sg'] = normal_po
+        candidate['normal_fz_stereographic_xy'] = \
+            vec3d.stereographic_projection(normal_po).reshape(2,)
         key = _direction_key(normal_po, decimals)
         candidate['fz_group_key'] = key
         candidate['source_candidates'] = [candidate]
@@ -1374,7 +1382,9 @@ def _export_plane_normals(plane, csl_record, lat_type, tol=1e-6):
             bp_fz_g2_po, lat_type, tol=tol),
         'bp_fz_normal_grain1_po': bp_fz_g1_po,
         'bp_fz_normal_grain2_po': bp_fz_g2_po,
-        'bp_fz_stereographic_grain1': plane.get('normal_fz_stereo'),
+        'bp_fz_normal_grain1_sg': plane.get('normal_fz_sg'),
+        'bp_fz_stereographic_xy_grain1_sg':
+            plane.get('normal_fz_stereographic_xy'),
         'basis_convention': 'column_vectors',
     }
 
@@ -1777,12 +1787,17 @@ def _to_builtin(value):
 
 
 def _plane_stereo_point(plane):
-    point = plane.get('normal_fz_stereo')
+    point = plane.get('normal_fz_stereographic_xy')
     if point is None:
-        point = plane.get('normal_fz_po', plane['normal_po'])
+        point = plane.get('normal_fz_sg')
+        if point is None:
+            point = plane.get('normal_fz_po', plane['normal_po'])
     point = np.asarray(point, dtype='double').reshape(-1,)
+    if point.size == 3:
+        return vec3d.stereographic_projection(point).reshape(2,)
     if point.size < 2:
-        raise ValueError('Plane stereographic point must have at least 2 values.')
+        raise ValueError(
+            'Plane stereographic point must have at least 2 values.')
     return point[:2]
 
 

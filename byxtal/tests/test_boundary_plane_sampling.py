@@ -3,6 +3,7 @@ import numpy as np
 import byxtal.boundary_plane_sampling as bps
 import byxtal.csl_utility_functions as cuf
 import byxtal.lattice as gbl
+import byxtal.vector3d as vec3d
 
 
 def test_canonicalize_plane_index_treats_opposites_as_same():
@@ -143,9 +144,35 @@ def _simple_plane(normal, csl_index, area=1.0, angle_error=0.0):
         'grain1_miller_conventional': np.array(csl_index, dtype='int64'),
         'normal_po': np.array(normal, dtype='double'),
         'normal_fz_po': np.array(normal, dtype='double'),
-        'normal_fz_stereo': np.array(normal, dtype='double'),
+        'normal_fz_sg': np.array(normal, dtype='double'),
+        'normal_fz_stereographic_xy':
+            vec3d.stereographic_projection(normal).reshape(2,),
         'best_by_effective_area': option,
     }
+
+
+def test_stereographic_projection_uses_column_vector_convention():
+    vectors = np.array([
+        [0.0, 1.0],
+        [0.0, 0.0],
+        [1.0, 0.0],
+    ])
+
+    projected = vec3d.stereographic_projection(vectors)
+
+    assert projected.shape == (2, 2)
+    assert np.allclose(projected[:, 0], [0.0, 0.0])
+    assert np.allclose(projected[:, 1], [1.0, 0.0])
+
+
+def test_stereographic_projection_rejects_lower_hemisphere():
+    try:
+        vec3d.stereographic_projection([0.0, 0.0, -1.0])
+    except NotImplementedError:
+        pass
+    else:
+        raise AssertionError(
+            'Expected lower-hemisphere stereographic projection to fail.')
 
 
 def test_sample_boundary_plane_fz_selects_quality_ordered_spaced_points():
@@ -325,7 +352,8 @@ def test_max_area_enumeration_sigma13_smoke():
         'grain1_miller_conventional',
         'normal_po',
         'normal_fz_po',
-        'normal_fz_stereo',
+        'normal_fz_sg',
+        'normal_fz_stereographic_xy',
         'primitive_basis',
         'primitive_metrics',
         'cell_options',
@@ -411,7 +439,10 @@ def test_export_boundary_plane_record_has_canonical_shape():
     assert record['csl_cell_spec']['completion_vector_column'] == 2
     assert len(record['plane_normals']['grain1_miller']) == 3
     assert len(record['plane_normals']['grain2_miller']) == 3
-    assert len(record['plane_normals']['bp_fz_stereographic_grain1']) == 3
+    assert len(record['plane_normals']['bp_fz_normal_grain1_sg']) == 3
+    assert len(record['plane_normals'][
+        'bp_fz_stereographic_xy_grain1_sg']) == 2
+    assert 'bp_fz_stereographic_grain1' not in record['plane_normals']
 
 
 def test_export_boundary_plane_record_completes_full_csl_cell():
@@ -488,6 +519,8 @@ if __name__ == '__main__':
     test_plot_effective_area_uses_common_minimum_area()
     test_fz_boundary_segments_include_expected_symmetry_shapes()
     test_plot_boundary_plane_fz_draws_boundary_and_symmetry_title()
+    test_stereographic_projection_uses_column_vector_convention()
+    test_stereographic_projection_rejects_lower_hemisphere()
     test_sample_boundary_plane_fz_selects_quality_ordered_spaced_points()
     test_sample_boundary_plane_fz_stops_when_max_spacing_met()
     test_sample_boundary_plane_fz_rejects_boundary_seeding_for_now()
